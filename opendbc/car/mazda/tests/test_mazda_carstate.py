@@ -1,8 +1,10 @@
 import pytest
 
-from opendbc.car import DT_CTRL, gen_empty_fingerprint
+from opendbc.can import CANPacker
+from opendbc.car import Bus, DT_CTRL, gen_empty_fingerprint
 from opendbc.car.mazda.interface import CarInterface
-from opendbc.car.mazda.values import CAR, CarControllerParams
+from opendbc.car.mazda.values import CAR, CarControllerParams, MazdaFlags
+from opendbc.sunnypilot.car.interfaces import setup_interfaces
 
 CAM_LANEINFO = 0x440
 
@@ -14,13 +16,37 @@ BIT2_LATCHED = bytes([0x41, 0b00100001, 0, 0, 0, 0, 0, 0])  # BIT2 stuck high fo
 FAULTED = bytes([0x42, 0b00000001, 0, 0, 0, 0x01, 0, 0])    # ERR_BIT (bit 40) set
 
 
-def _interface(alpha_long=True):
+def _interface(alpha_long=True, ti=False):
   fingerprint = gen_empty_fingerprint()
   CP = CarInterface.get_params(CAR.MAZDA_CX5_2022, fingerprint, [], alpha_long=alpha_long,
                                is_release=False, docs=False)
   CP_SP = CarInterface.get_params_sp(CP, CAR.MAZDA_CX5_2022, fingerprint, [],
                                      alpha_long=alpha_long, is_release_sp=False, docs=False)
+  if ti:
+    setup_interfaces(CarInterface, CP, CP_SP, [{"TorqueInterceptorEnabled": True}])
   return CarInterface(CP, CP_SP)
+
+
+def _ti_feedback(torque=0, **overrides):
+  values = {
+    "TI_TORQUE_SENSOR": torque,
+    "CHKSUM": 0,
+    "VERSION_NUMBER": 1,
+    "STATE": 3,
+    "VIOL": 0,
+    "ERROR": 0,
+    "RAMP_DOWN": 0,
+    "SPARE": 0,
+  }
+  values.update(overrides)
+  return CANPacker("mazda_2017").make_can_msg("TI_FEEDBACK", 1, values)
+
+
+def _feed_ti(CI, frames=1, torque=0, **overrides):
+  ret = None
+  for i in range(1, frames + 1):
+    ret, _ = CI.update([(i * 20_000_000, [_ti_feedback(torque, **overrides)])])
+  return ret
 
 
 def _feed(CI, payload, seconds):
@@ -202,3 +228,83 @@ class TestCancelUnderBraking:
     assert ret.cruiseState.available
     ret, n = self._feed(CI, packer, n + 5, 0.2, brake=True, cancel=False)
     assert not ret.cruiseState.available
+
+
+class TestMazdaTorqueInterceptorState:
+  def test_feedback_parser_is_ti_only_on_bus_one_at_50_hz(self):
+    assert Bus.body not in _interface(ti=False).can_parsers
+
+    parser = _interface(ti=True).can_parsers[Bus.body]
+    assert parser.bus == 1
+    assert parser.message_states[0x24A].frequency == 50
+
+  @pytest.mark.parametrize(("overrides", "healthy"), [
+    ({}, True),
+    ({"VERSION_NUMBER": 0}, False),
+    ({"VERSION_NUMBER": 2}, False),
+    ({"STATE": 0}, False),
+    ({"STATE": 1}, False),
+    ({"STATE": 2}, False),
+    ({"VIOL": 1}, False),
+    ({"ERROR": 1}, False),
+    ({"RAMP_DOWN": 1}, False),
+  ])
+  def test_feedback_health_controls_temporary_fault(self, overrides, healthy):
+    CI = _interface(ti=True)
+    ret = _feed_ti(CI, **overrides)
+    assert CI.can_parsers[Bus.body].can_valid
+    assert CI.CS.ti_lkas_allowed is healthy
+    assert ret.steerFaultTemporary is not healthy
+
+  def test_missing_stale_and_wrong_bus_feedback_are_unhealthy(self):
+    CI = _interface(ti=True)
+    ret, _ = CI.update([])
+    assert not CI.CS.ti_lkas_allowed
+    assert ret.steerFaultTemporary
+
+    msg = _ti_feedback()
+    ret, _ = CI.update([(20_000_000, [(msg[0], msg[1], 0)])])
+    assert not CI.CS.ti_lkas_allowed
+    assert ret.steerFaultTemporary
+
+    ret = _feed_ti(CI)
+    assert CI.CS.ti_lkas_allowed
+    assert not ret.steerFaultTemporary
+
+    for i in range(5):
+      ret, _ = CI.update([((300 + i * 10) * 1_000_000, [])])
+    assert not CI.CS.ti_lkas_allowed
+    assert ret.steerFaultTemporary
+
+  def test_one_healthy_frame_recovers_after_protocol_error(self):
+    CI = _interface(ti=True)
+    ret = _feed_ti(CI, ERROR=1)
+    assert not CI.CS.ti_lkas_allowed
+    assert ret.steerFaultTemporary
+    ret = _feed_ti(CI)
+    assert CI.CS.ti_lkas_allowed
+    assert not ret.steerFaultTemporary
+
+  @pytest.mark.parametrize(("torque", "pressed"), [(6, False), (7, True), (-7, True)])
+  def test_ti_torque_and_pressed_threshold(self, torque, pressed):
+    ret = _feed_ti(_interface(ti=True), frames=6, torque=torque)
+    assert ret.steeringTorque == torque
+    assert ret.steeringPressed is pressed
+
+  def test_ti_suppresses_stock_faults_while_health_drives_temporary_fault(self):
+    stock = _interface(ti=False)
+    ti = _interface(ti=True)
+    stock.update([])
+    ti.update([])
+
+    cam_fault = CANPacker("mazda_2017").make_can_msg("CAM_LKAS", 2, {"ERR_BIT_1": 1})
+    stock_ret, _ = stock.update([(20_000_000, [cam_fault])])
+    ti_ret, _ = ti.update([(20_000_000, [cam_fault, _ti_feedback()])])
+
+    assert stock_ret.invalidLkasSetting
+    assert stock_ret.steerFaultPermanent
+    assert not stock_ret.steerFaultTemporary
+    assert not ti_ret.invalidLkasSetting
+    assert not ti_ret.steerFaultPermanent
+    assert not ti_ret.steerFaultTemporary
+    assert ti.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR
