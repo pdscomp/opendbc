@@ -13,7 +13,7 @@ from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.longitudinal import LEAD_DEBOUNCE_FRAMES, RESUME_UNLATCH_FRAMES, StandstillHold
 from opendbc.car.mazda.interface import CarInterface
-from opendbc.car.mazda.values import CAR, CarControllerParams
+from opendbc.car.mazda.values import CAR, CarControllerParams, MazdaFlags
 
 
 class TestCarControllerParams:
@@ -22,7 +22,7 @@ class TestCarControllerParams:
   def cx5_2022_params(self):
     class FakeCP:
       carFingerprint = CAR.MAZDA_CX5_2022
-      minSteerSpeed = 0.0   # steer_to_zero -> CX-5 2022+ EPS present
+      flags = MazdaFlags.GEN1 | MazdaFlags.STEER_TO_ZERO
     return CarControllerParams(FakeCP())
 
   @pytest.fixture
@@ -30,14 +30,14 @@ class TestCarControllerParams:
     # A CX-5 2022+ EPS swapped into (or shared by) another Mazda: different model, same EPS.
     class FakeCP:
       carFingerprint = CAR.MAZDA_CX9_2021
-      minSteerSpeed = 0.0
+      flags = MazdaFlags.GEN1 | MazdaFlags.STEER_TO_ZERO
     return CarControllerParams(FakeCP())
 
   @pytest.fixture
   def pre_2022_params(self):
     class FakeCP:
       carFingerprint = CAR.MAZDA_CX5
-      minSteerSpeed = 12.5   # no CX-5 EPS -> low-speed lockout, minSteerSpeed > 0
+      flags = MazdaFlags.GEN1
     return CarControllerParams(FakeCP())
 
   def test_cx5_2022_has_lookup(self, cx5_2022_params):
@@ -65,7 +65,7 @@ class TestCarControllerParams:
     assert cx5_2022_params.STEER_DRIVER_MULTIPLIER == 15
 
   def test_eps_swap_gets_cx5_tune(self, eps_swap_params):
-    # EPS present (minSteerSpeed == 0) on a non-CX-5 model still gets the higher-authority tune
+    # EPS capability on a non-CX-5 model still gets the higher-authority tune
     assert eps_swap_params.STEER_MAX == 1200
     assert eps_swap_params.STEER_DRIVER_MULTIPLIER == 15
     assert hasattr(eps_swap_params, 'STEER_MAX_LOOKUP')
@@ -74,6 +74,17 @@ class TestCarControllerParams:
     assert not hasattr(pre_2022_params, 'STEER_MAX_LOOKUP')
     assert pre_2022_params.STEER_MAX == 800
     assert pre_2022_params.STEER_DRIVER_MULTIPLIER == 1
+
+  def test_ti_speed_override_does_not_select_high_authority_stock_tune(self):
+    params = CarControllerParams(SimpleNamespace(flags=MazdaFlags.GEN1 | MazdaFlags.TORQUE_INTERCEPTOR))
+    assert params.STEER_MAX == 800
+    assert not hasattr(params, 'STEER_MAX_LOOKUP')
+
+  def test_steer_to_zero_eps_keeps_high_authority_tune_with_ti(self):
+    flags = MazdaFlags.GEN1 | MazdaFlags.STEER_TO_ZERO | MazdaFlags.TORQUE_INTERCEPTOR
+    params = CarControllerParams(SimpleNamespace(flags=flags))
+    assert params.STEER_MAX == 1200
+    assert hasattr(params, 'STEER_MAX_LOOKUP')
 
 
 def crz_info_reference_checksum(dat):
