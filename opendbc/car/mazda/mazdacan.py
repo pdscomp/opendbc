@@ -164,6 +164,14 @@ def create_steering_control(packer, CP, frame, apply_torque, lkas):
   return packer.make_can_msg("CAM_LKAS", 0, values)
 
 
+def create_ti_steering_control(packer, apply_torque):
+  return packer.make_can_msg("CAM_LKAS2", 1, {
+    "LKAS_REQUEST": apply_torque,
+    "CHKSUM": apply_torque,
+    "KEY": 0xC461CE60,
+  })
+
+
 def create_alert_command(packer, cam_msg: dict, ldw: bool, steer_required: bool):
   values = {s: cam_msg[s] for s in [
     "LINE_VISIBLE",

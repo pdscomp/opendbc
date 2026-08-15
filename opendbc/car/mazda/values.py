@@ -77,6 +77,17 @@ class CarControllerParams:
       self.STEER_DRIVER_MULTIPLIER = 1    # upstream stock
 
 
+class TorqueInterceptorControllerParams:
+  STEER_MAX = 600
+  STEER_DELTA_UP = 6
+  STEER_DELTA_DOWN = 15
+  STEER_DRIVER_ALLOWANCE = 15
+  STEER_DRIVER_MULTIPLIER = 40
+  STEER_DRIVER_FACTOR = 1
+  STEER_MAX_RT_DELTA = 192
+  STEER_RT_INTERVAL_NS = 250_000_000
+
+
 @dataclass
 class MazdaCarDocs(CarDocs):
   package: str = "All"
