@@ -7,7 +7,7 @@ from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.longitudinal import (RADAR_ADDR, RadarSessionManager, RadarSessionState, StandstillHold,
                                             create_radar_session_msg)
-from opendbc.car.mazda.values import CarControllerParams, Buttons
+from opendbc.car.mazda.values import CarControllerParams, Buttons, MazdaFlags, TorqueInterceptorControllerParams
 
 from opendbc.sunnypilot.car.mazda.icbm import IntelligentCruiseButtonManagementInterface
 
@@ -25,6 +25,10 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     IntelligentCruiseButtonManagementInterface.__init__(self, CP, CP_SP)
     self.params = CarControllerParams(CP)
     self.apply_torque_last = 0
+    # ponytail: keep TI RT state local until another host torque path needs the same limiter.
+    self.ti_apply_torque_last = 0
+    self.ti_rt_torque_last = 0
+    self.ti_rt_torque_last_ts = None
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.brake_counter = 0
     self.stop_and_go = StandstillHold()
@@ -37,6 +41,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     can_sends = []
 
     apply_torque = 0
+    ti_apply_torque = 0
 
     # Speed-dependent STEER_MAX (CX-5 2022: 1200 below 32 mph, 800 above)
     if hasattr(self.params, 'STEER_MAX_LOOKUP'):
@@ -50,6 +55,24 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
       new_torque = int(round(CC.actuators.torque * steer_max))
       apply_torque = apply_driver_steer_torque_limits(new_torque, self.apply_torque_last,
                                                       CS.out.steeringTorque, self.params, steer_max)
+
+    if self.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR:
+      if CC.latActive and CS.ti_lkas_allowed:
+        ti_new_torque = int(round(CC.actuators.torque * TorqueInterceptorControllerParams.STEER_MAX))
+        ti_apply_torque = apply_driver_steer_torque_limits(ti_new_torque, self.ti_apply_torque_last,
+                                                           CS.out.steeringTorque, TorqueInterceptorControllerParams)
+        if self.ti_rt_torque_last_ts is None:
+          self.ti_rt_torque_last_ts = now_nanos
+        highest_torque = max(self.ti_rt_torque_last, 0) + TorqueInterceptorControllerParams.STEER_MAX_RT_DELTA
+        lowest_torque = min(self.ti_rt_torque_last, 0) - TorqueInterceptorControllerParams.STEER_MAX_RT_DELTA
+        ti_apply_torque = max(min(ti_apply_torque, highest_torque), lowest_torque)
+        if now_nanos - self.ti_rt_torque_last_ts > TorqueInterceptorControllerParams.STEER_RT_INTERVAL_NS:
+          self.ti_rt_torque_last = ti_apply_torque
+          self.ti_rt_torque_last_ts = now_nanos
+      else:
+        self.ti_rt_torque_last = 0
+        self.ti_rt_torque_last_ts = now_nanos
+      self.ti_apply_torque_last = ti_apply_torque
 
     if CC.cruiseControl.cancel:
       # If brake is pressed, let us wait >70ms before trying to disable crz to avoid
@@ -82,6 +105,8 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     # send steering command
     can_sends.append(mazdacan.create_steering_control(self.packer, self.CP,
                                                       self.frame, apply_torque, CS.cam_lkas))
+    if self.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR:
+      can_sends.append(mazdacan.create_ti_steering_control(self.packer, ti_apply_torque))
 
     # Intelligent Cruise Button Management
     # Suppress ICBM CRZ_BTNS spam while cancel/resume are in flight or while the driver is
