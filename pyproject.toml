@@ -23,6 +23,7 @@ testing = [
   "tree-sitter-c",
   "gcovr",
   "unittest-parallel",
+  "pytest",
   "hypothesis==6.47.*",
   "zstandard",
 
