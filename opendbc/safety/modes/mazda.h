@@ -19,14 +19,25 @@
 #define MAZDA_STEER_TORQUE  0x240U
 #define MAZDA_ENGINE_DATA   0x202U
 #define MAZDA_PEDALS        0x165U
+#define MAZDA_TI_LKAS       0x249U
+#define MAZDA_TI_FEEDBACK   0x24aU
 
 // CAN bus numbers
 #define MAZDA_MAIN 0
+#define MAZDA_AUX  1
 #define MAZDA_CAM  2
 
 #define MAZDA_PARAM_LONGITUDINAL 1U
+#define MAZDA_PARAM_TI           2U
+#define MAZDA_TI_FEEDBACK_TIMEOUT_US 40000U  // fail closed after two missed 50 Hz frames
 
 static bool mazda_longitudinal = false;
+static bool mazda_ti = false;
+static bool mazda_ti_feedback_healthy = false;
+static uint32_t mazda_ti_feedback_ts = 0U;
+static int mazda_ti_desired_torque_last = 0;
+static int mazda_ti_rt_torque_last = 0;
+static uint32_t mazda_ti_ts_torque_check_last = 0U;
 
 // With longitudinal control the stock radar is silenced and openpilot replays its frames,
 // so allowed tx patterns are pinned to byte-exact stock captures wherever possible.
@@ -62,6 +73,8 @@ static bool mazda_empty_radar_track_msg_valid(const CANPacket_t *msg) {
             (msg->data[2] == 0xfeU) && (msg->data[3] == 0x7fU) &&
             (msg->data[4] == 0xfbU) && (msg->data[5] == 0xffU) &&
             (msg->data[6] == 0x3fU) && ((msg->data[7] & 0xf0U) == 0xc0U);
+  } else {
+    valid = false;
   }
 
   return valid;
@@ -84,6 +97,77 @@ static bool mazda_radar_track_msg_valid(const CANPacket_t *msg) {
          (controls_allowed && mazda_synthetic_lead_radar_track_msg_valid(msg));
 }
 
+static bool mazda_ti_feedback_is_fresh(void) {
+  return mazda_ti_feedback_healthy &&
+         (safety_get_ts_elapsed(microsecond_timer_get(), mazda_ti_feedback_ts) <= MAZDA_TI_FEEDBACK_TIMEOUT_US);
+}
+
+static void mazda_ti_reset_torque_state(void) {
+  mazda_ti_desired_torque_last = 0;
+  mazda_ti_rt_torque_last = 0;
+  mazda_ti_ts_torque_check_last = microsecond_timer_get();
+}
+
+static bool mazda_ti_torque_cmd_checks(int desired_torque) {
+  const TorqueSteeringLimits MAZDA_TI_STEERING_LIMITS = {
+    .max_torque = 600,
+    .max_rate_up = 6,
+    .max_rate_down = 15,
+    .max_rt_delta = 192,
+    .driver_torque_multiplier = 40,
+    .driver_torque_allowance = 15,
+    .type = TorqueDriverLimited,
+  };
+
+  bool violation = false;
+  bool controls = controls_allowed || controls_allowed_lateral;
+  uint32_t ts = microsecond_timer_get();
+  bool feedback_fresh = mazda_ti_feedback_is_fresh();
+
+  if (controls && feedback_fresh) {
+    violation |= safety_max_limit_check(desired_torque, MAZDA_TI_STEERING_LIMITS.max_torque,
+                                        -MAZDA_TI_STEERING_LIMITS.max_torque);
+    violation |= driver_limit_check(desired_torque, mazda_ti_desired_torque_last, &torque_driver,
+                                    MAZDA_TI_STEERING_LIMITS.max_torque,
+                                    MAZDA_TI_STEERING_LIMITS.max_rate_up,
+                                    MAZDA_TI_STEERING_LIMITS.max_rate_down,
+                                    MAZDA_TI_STEERING_LIMITS.driver_torque_allowance,
+                                    MAZDA_TI_STEERING_LIMITS.driver_torque_multiplier);
+    mazda_ti_desired_torque_last = desired_torque;
+    violation |= rt_torque_rate_limit_check(desired_torque, mazda_ti_rt_torque_last,
+                                            MAZDA_TI_STEERING_LIMITS.max_rt_delta);
+    if (safety_get_ts_elapsed(ts, mazda_ti_ts_torque_check_last) > MAX_RT_INTERVAL) {
+      mazda_ti_rt_torque_last = desired_torque;
+      mazda_ti_ts_torque_check_last = ts;
+    }
+  } else {
+    violation = desired_torque != 0;
+  }
+
+  if (violation || !controls || !feedback_fresh) {
+    mazda_ti_reset_torque_state();
+  }
+  return violation;
+}
+
+static bool mazda_get_quality_flag_valid(const CANPacket_t *msg) {
+  bool valid = (msg->addr == MAZDA_TI_FEEDBACK) && ((int)msg->bus == MAZDA_AUX) &&
+               (msg->data[2] == 1U) && (msg->data[3] == 3U) &&
+               (msg->data[4] == 0U) && (msg->data[5] == 0U) && (msg->data[6] == 0U);
+  if (msg->addr == MAZDA_TI_FEEDBACK) {
+    mazda_ti_feedback_healthy = valid;
+    if (valid) {
+      mazda_ti_feedback_ts = microsecond_timer_get();
+    }
+  }
+  return valid;
+}
+
+static bool mazda_fwd_hook(int bus_num, int addr) {
+  return ((bus_num == MAZDA_CAM) && ((addr == (int)MAZDA_LKAS) || (addr == (int)MAZDA_LKAS_HUD) || (addr == (int)MAZDA_TI_LKAS))) ||
+         ((bus_num == MAZDA_MAIN) && (addr == (int)MAZDA_TI_LKAS));
+}
+
 // track msgs coming from OP so that we know what CAM msgs to drop and what to forward
 static void mazda_rx_hook(const CANPacket_t *msg) {
   if ((int)msg->bus == MAZDA_MAIN) {
@@ -93,7 +177,7 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
       vehicle_moving = speed > 10; // moving when speed > 0.1 kph
     }
 
-    if (msg->addr == MAZDA_STEER_TORQUE) {
+    if ((msg->addr == MAZDA_STEER_TORQUE) && !mazda_ti) {
       int torque_driver_new = msg->data[0] - 127U;
       // update array of samples
       update_sample(&torque_driver, torque_driver_new);
@@ -136,6 +220,10 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
       brake_pressed = brake;
     }
   }
+
+  if (mazda_ti && ((int)msg->bus == MAZDA_AUX) && (msg->addr == MAZDA_TI_FEEDBACK)) {
+    update_sample(&torque_driver, (int)msg->data[0] - 127);
+  }
 }
 
 static bool mazda_tx_hook(const CANPacket_t *msg) {
@@ -175,6 +263,21 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     }
   }
 
+  if (((int)msg->bus == MAZDA_AUX) && (msg->addr == MAZDA_TI_LKAS)) {
+    int desired_torque_raw = ((msg->data[0] & 0x0FU) << 8) | msg->data[1];
+    int duplicate_torque_raw = ((msg->data[2] & 0x0FU) << 8) | msg->data[3];
+    int desired_torque = desired_torque_raw - 2048;
+    bool valid_key = (msg->data[4] == 0xc4U) && (msg->data[5] == 0x61U) &&
+                     (msg->data[6] == 0xceU) && (msg->data[7] == 0x60U);
+    bool reserved_bits = ((msg->data[0] & 0xF0U) != 0U) || ((msg->data[2] & 0xF0U) != 0U);
+    bool violation = !mazda_ti || reserved_bits || (desired_torque_raw != duplicate_torque_raw) || !valid_key;
+    violation |= mazda_ti_torque_cmd_checks(desired_torque);
+    if (violation) {
+      mazda_ti_reset_torque_state();
+      tx = false;
+    }
+  }
+
   if (mazda_longitudinal && long_replacement_bus && (msg->addr == MAZDA_CRZ_INFO)) {
     // the stock standby pattern pegs the command field high; allow it byte-exactly
     // (checksum included) instead of decoding it as a huge accel command
@@ -185,7 +288,10 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
                          (msg->data[7] == ((0x5dU - msg->data[6]) & 0xffU));
 
     // 13-bit ACCEL_CMD: data[2] low bits, data[3], data[4] high bits, offset 4096
-    int desired_accel = ((((int)msg->data[2] & 0x3) << 11) | (((int)msg->data[3]) << 3) | (((int)msg->data[4]) >> 5)) - 4096;
+    uint32_t desired_accel_raw = (((uint32_t)msg->data[2] & 0x3U) << 11) |
+                                 ((uint32_t)msg->data[3] << 3) |
+                                 ((uint32_t)msg->data[4] >> 5);
+    int desired_accel = (int)desired_accel_raw - 4096;
     if (!stock_standby && longitudinal_accel_checks(desired_accel, MAZDA_LONG_LIMITS)) {
       tx = false;
     }
@@ -240,6 +346,13 @@ static safety_config mazda_init(uint16_t param) {
     {MAZDA_LKAS_HUD, 0, 8, .check_relay = true},
   };
 
+  static const CanMsg MAZDA_TI_TX_MSGS[] = {
+    {MAZDA_LKAS, 0, 8, .check_relay = true},
+    {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false},
+    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true},
+    {MAZDA_TI_LKAS, MAZDA_AUX, 8, .check_relay = false},
+  };
+
   static const CanMsg MAZDA_LONG_TX_MSGS[] = {
     {MAZDA_LKAS, 0, 8, .check_relay = true},
     {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false},
@@ -265,31 +378,83 @@ static safety_config mazda_init(uint16_t param) {
     {MAZDA_RADAR_TRACK_6, MAZDA_CAM, 8, .check_relay = false},
   };
 
-  static RxCheck mazda_rx_checks[] = {
-    {.msg = {{MAZDA_CRZ_CTRL,     0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-    {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-    {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-    {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-    {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-  };
-
-  // no CRZ_CTRL check: the stock radar frame disappears after the teardown
-  static RxCheck mazda_long_rx_checks[] = {
-    {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-    {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-    {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-    {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+  static const CanMsg MAZDA_LONG_TI_TX_MSGS[] = {
+    {MAZDA_LKAS, 0, 8, .check_relay = true},
+    {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false},
+    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true},
+    {MAZDA_TI_LKAS, MAZDA_AUX, 8, .check_relay = false},
+    {MAZDA_CRZ_INFO, 0, 8, .check_relay = false},
+    {MAZDA_CRZ_CTRL, 0, 8, .check_relay = false},
+    {MAZDA_RADAR_STATIC, 0, 8, .check_relay = false},
+    {MAZDA_RADAR_TRACK_1, 0, 8, .check_relay = false},
+    {MAZDA_RADAR_TRACK_2, 0, 8, .check_relay = false},
+    {MAZDA_RADAR_TRACK_3, 0, 8, .check_relay = false},
+    {MAZDA_RADAR_TRACK_4, 0, 8, .check_relay = false},
+    {MAZDA_RADAR_TRACK_5, 0, 8, .check_relay = false},
+    {MAZDA_RADAR_TRACK_6, 0, 8, .check_relay = false},
+    {MAZDA_RADAR_UDS, 0, 8, .check_relay = false},
+    {MAZDA_CRZ_INFO, MAZDA_CAM, 8, .check_relay = false},
+    {MAZDA_CRZ_CTRL, MAZDA_CAM, 8, .check_relay = false},
+    {MAZDA_RADAR_STATIC, MAZDA_CAM, 8, .check_relay = false},
+    {MAZDA_RADAR_TRACK_1, MAZDA_CAM, 8, .check_relay = false},
+    {MAZDA_RADAR_TRACK_2, MAZDA_CAM, 8, .check_relay = false},
+    {MAZDA_RADAR_TRACK_3, MAZDA_CAM, 8, .check_relay = false},
+    {MAZDA_RADAR_TRACK_4, MAZDA_CAM, 8, .check_relay = false},
+    {MAZDA_RADAR_TRACK_5, MAZDA_CAM, 8, .check_relay = false},
+    {MAZDA_RADAR_TRACK_6, MAZDA_CAM, 8, .check_relay = false},
   };
 
   mazda_longitudinal = GET_FLAG(param, MAZDA_PARAM_LONGITUDINAL);
+  mazda_ti = GET_FLAG(param, MAZDA_PARAM_TI);
+  mazda_ti_feedback_healthy = false;
+  mazda_ti_feedback_ts = 0U;
+  mazda_ti_reset_torque_state();
   acc_main_on = false;
 
-  return mazda_longitudinal ? BUILD_SAFETY_CFG(mazda_long_rx_checks, MAZDA_LONG_TX_MSGS) :
-                              BUILD_SAFETY_CFG(mazda_rx_checks, MAZDA_TX_MSGS);
+  safety_config ret;
+  if (mazda_longitudinal) {
+    // no CRZ_CTRL check: the stock radar frame disappears after the teardown
+    static RxCheck mazda_long_rx_checks[] = {
+      {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    };
+    static RxCheck mazda_long_ti_rx_checks[] = {
+      {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_TI_FEEDBACK,  MAZDA_AUX, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = false}, { 0 }, { 0 }}},
+    };
+    ret = mazda_ti ? BUILD_SAFETY_CFG(mazda_long_ti_rx_checks, MAZDA_LONG_TI_TX_MSGS) :
+                     BUILD_SAFETY_CFG(mazda_long_rx_checks, MAZDA_LONG_TX_MSGS);
+  } else {
+    static RxCheck mazda_rx_checks[] = {
+      {.msg = {{MAZDA_CRZ_CTRL,     0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    };
+    static RxCheck mazda_ti_rx_checks[] = {
+      {.msg = {{MAZDA_CRZ_CTRL,     0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+      {.msg = {{MAZDA_TI_FEEDBACK,  MAZDA_AUX, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = false}, { 0 }, { 0 }}},
+    };
+    ret = mazda_ti ? BUILD_SAFETY_CFG(mazda_ti_rx_checks, MAZDA_TI_TX_MSGS) :
+                     BUILD_SAFETY_CFG(mazda_rx_checks, MAZDA_TX_MSGS);
+  }
+  return ret;
 }
 
 const safety_hooks mazda_hooks = {
   .init = mazda_init,
   .rx = mazda_rx_hook,
   .tx = mazda_tx_hook,
+  .fwd = mazda_fwd_hook,
+  .get_quality_flag_valid = mazda_get_quality_flag_valid,
 };
