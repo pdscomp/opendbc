@@ -19,6 +19,18 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 LONG_BUSES = (0, 2)
 
 
+def laneinfo_present_lkas_on(cam_laneinfo: dict, CP):
+  # The CX-5 2022-class EPS (minSteerSpeed == 0) holds LKAS_BLOCK while the camera
+  # reports LKAS off and silently ignores our CAM_LKAS torque. We originate
+  # CAM_LANEINFO on the car bus, so present LKAS-on there. Camera-side consumers
+  # (FSC settle gate) still read the real frames from cp_cam. Runs regardless of
+  # latActive (the EPS must believe LKAS before torque arrives), which means the
+  # dash shows lanes/LKAS-on all drive on these cars — accepted trade-off.
+  if CP.minSteerSpeed != 0:
+    return cam_laneinfo
+  return {**cam_laneinfo, "LANE_LINES": 2, "LINE_VISIBLE": 1, "LINE_NOT_VISIBLE": 0}
+
+
 class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterface):
   def __init__(self, dbc_names, CP, CP_SP):
     CarControllerBase.__init__(self, dbc_names, CP, CP_SP)
@@ -77,7 +89,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
       steer_required = CC.hudControl.visualAlert == VisualAlert.steerRequired
       # TODO: find a way to silence audible warnings so we can add more hud alerts
       steer_required = steer_required and CS.lkas_allowed_speed
-      can_sends.append(mazdacan.create_alert_command(self.packer, CS.cam_laneinfo, ldw, steer_required))
+      can_sends.append(mazdacan.create_alert_command(self.packer, laneinfo_present_lkas_on(CS.cam_laneinfo, self.CP), ldw, steer_required))
 
     # send steering command
     can_sends.append(mazdacan.create_steering_control(self.packer, self.CP,

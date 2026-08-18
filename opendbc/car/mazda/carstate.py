@@ -183,9 +183,11 @@ class CarState(CarStateBase, CarStateExt):
     ret.cruiseState.standstill = cp.vl["PEDALS"]["STANDSTILL"] == 1
     ret.cruiseState.speed = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"] * CV.KPH_TO_MS
 
-    # stock lkas should be on
-    # TODO: is this needed?
-    ret.invalidLkasSetting = cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0
+    # Stock LKAS gate: only meaningful on the stock GEN1 EPS. On 2022-EPS cars
+    # (minSteerSpeed == 0) the EPS vetoes our torque while the camera reports LKAS
+    # off, and we already present LKAS-on in the CAM_LANEINFO we originate
+    # (carcontroller), so the gate is both unnecessary and self-defeating there.
+    ret.invalidLkasSetting = self.CP.minSteerSpeed > 0 and cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0
 
     if ret.cruiseState.enabled:
       if not self.lkas_allowed_speed and self.acc_active_last:

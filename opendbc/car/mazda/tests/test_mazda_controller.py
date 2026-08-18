@@ -10,7 +10,7 @@ import pytest
 from opendbc.can import CANPacker, CANParser
 from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.car.mazda import mazdacan
-from opendbc.car.mazda.carcontroller import CarController
+from opendbc.car.mazda.carcontroller import CarController, laneinfo_present_lkas_on
 from opendbc.car.mazda.longitudinal import LEAD_DEBOUNCE_FRAMES, RESUME_UNLATCH_FRAMES, StandstillHold
 from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.values import CAR, CarControllerParams
@@ -701,3 +701,55 @@ class TestRadarSessionSequencing:
     # and settles back to silenced once quiet again
     sends = self._step(cc, stock_radar_alive=False, fsc_settled=True)
     assert SESSION_PROG_DAT not in self._uds(sends)
+
+
+class TestLaneinfoLkasSpoof:
+  CAM_MSG_KEYS = ["LINE_VISIBLE", "LINE_NOT_VISIBLE", "LANE_LINES", "BIT1", "BIT2",
+                  "BIT3", "NO_ERR_BIT", "S1", "S1_HBEAM"]
+
+  def _cam_laneinfo(self):
+    return {k: 0 for k in self.CAM_MSG_KEYS}  # camera LKAS-off frame, as on Paul's car
+
+  def test_spoof_only_on_steer_to_zero_eps(self):
+    cam = self._cam_laneinfo()
+    out = laneinfo_present_lkas_on(cam, SimpleNamespace(minSteerSpeed=0.0))
+    assert (out["LANE_LINES"], out["LINE_VISIBLE"], out["LINE_NOT_VISIBLE"]) == (2, 1, 0)
+    stock = laneinfo_present_lkas_on(cam, SimpleNamespace(minSteerSpeed=12.5))
+    assert stock is cam  # untouched passthrough for stock GEN1 EPS
+
+  def test_spoof_survives_wire_roundtrip(self):
+    # Pack the spoofed dict like carcontroller does and parse it back off the wire.
+    out = laneinfo_present_lkas_on(self._cam_laneinfo(), SimpleNamespace(minSteerSpeed=0.0))
+    addr, dat, bus = mazdacan.create_alert_command(CANPacker("mazda_2017"), out, False, False)
+    cp = CANParser("mazda_2017", [("CAM_LANEINFO", float("nan"))], 0)
+    cp.update([(0, [(addr, dat, bus)])])
+    assert cp.vl["CAM_LANEINFO"]["LANE_LINES"] == 2
+    assert cp.vl["CAM_LANEINFO"]["LINE_VISIBLE"] == 1
+
+  def test_call_site_emits_spoofed_laneinfo(self, cc):
+    # End-to-end through CarController.update: with the HUD frame aligned, the
+    # outgoing CAM_LANEINFO on bus 0 must carry the spoofed LKAS-on values.
+    class FakeActuators(SimpleNamespace):
+      def as_builder(self):
+        return SimpleNamespace()
+
+    control, control_sp, carstate = _mock_cc()
+    control.latActive = True
+    control.actuators = FakeActuators(accel=0.5, torque=0.1,
+                                      longControlState=structs.CarControl.Actuators.LongControlState.pid)
+    control.hudControl.visualAlert = structs.CarControl.HUDControl.VisualAlert.none
+    carstate.cam_laneinfo = {k: 0 for k in TestLaneinfoLkasSpoof.CAM_MSG_KEYS}
+    carstate.cam_lkas = {"BIT_1": 0, "ERR_BIT_1": 0, "ERR_BIT_2": 0}
+    carstate.crz_btns_counter = 0
+    carstate.cancel_button = 1  # suppress ICBM
+    carstate.lkas_allowed_speed = True
+    carstate.out.steeringTorque = 0
+    carstate.out.vEgoRaw = 10.0
+    cc.frame = 50  # align the frame % 50 HUD emit
+
+    _, sends = cc.update(control, control_sp, carstate, 0)
+    laneinfo = next((d for a, d, b in sends if a == 0x440 and b == 0), None)
+    assert laneinfo is not None
+    cp = CANParser("mazda_2017", [("CAM_LANEINFO", float("nan"))], 0)
+    cp.update([(0, [(0x440, laneinfo, 0)])])
+    assert cp.vl["CAM_LANEINFO"]["LANE_LINES"] == 2

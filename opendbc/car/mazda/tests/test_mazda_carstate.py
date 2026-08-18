@@ -14,13 +14,23 @@ BIT2_LATCHED = bytes([0x41, 0b00100001, 0, 0, 0, 0, 0, 0])  # BIT2 stuck high fo
 FAULTED = bytes([0x42, 0b00000001, 0, 0, 0, 0x01, 0, 0])    # ERR_BIT (bit 40) set
 
 
-def _interface(alpha_long=True):
+def _interface(alpha_long=True, car=CAR.MAZDA_CX5_2022):
   fingerprint = gen_empty_fingerprint()
-  CP = CarInterface.get_params(CAR.MAZDA_CX5_2022, fingerprint, [], alpha_long=alpha_long,
+  CP = CarInterface.get_params(car, fingerprint, [], alpha_long=alpha_long,
                                is_release=False, docs=False)
-  CP_SP = CarInterface.get_params_sp(CP, CAR.MAZDA_CX5_2022, fingerprint, [],
+  CP_SP = CarInterface.get_params_sp(CP, car, fingerprint, [],
                                      alpha_long=alpha_long, is_release_sp=False, docs=False)
   return CarInterface(CP, CP_SP)
+
+
+def test_invalid_lkas_gate_only_applies_to_stock_gen1_eps():
+  # Stock LKAS off (no CAM_LANEINFO): the stock GEN1 EPS keeps the engagement
+  # gate; 2022-EPS cars are exempt (we present LKAS-on to the EPS ourselves).
+  gen1_ret, _ = _interface(car=CAR.MAZDA_CX5).update([])
+  cx5_2022_ret, _ = _interface().update([])
+
+  assert gen1_ret.invalidLkasSetting
+  assert not cx5_2022_ret.invalidLkasSetting
 
 
 def _feed(CI, payload, seconds):
