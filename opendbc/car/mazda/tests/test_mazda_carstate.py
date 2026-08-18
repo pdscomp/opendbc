@@ -350,3 +350,19 @@ class TestMazdaTorqueInterceptorState:
     assert not ti_ret.steerFaultPermanent
     assert not ti_ret.steerFaultTemporary
     assert ti.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR
+
+  def test_ti_ready_mirrored_to_carstate_sp(self):
+    CI = _interface(ti=True)
+    _, ret_sp = CI.update([])
+    assert not ret_sp.torqueInterceptorReady
+
+    _, ret_sp = CI.update([(20_000_000, [_ti_feedback()])])
+    assert CI.CS.ti_lkas_allowed
+    assert ret_sp.torqueInterceptorReady
+
+  def test_ti_not_ready_field_capture(self):
+    # Real frame captured from a TI reporting STATE=OFF, VERSION_NUMBER=16, VIOL=0x12
+    CI = _interface(ti=True)
+    _, ret_sp = CI.update([(20_000_000, [(0x24A, bytes.fromhex("7f7f100112000030"), 1)])])
+    assert not CI.CS.ti_lkas_allowed
+    assert not ret_sp.torqueInterceptorReady

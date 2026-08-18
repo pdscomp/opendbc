@@ -91,6 +91,7 @@ class CarState(CarStateBase, CarStateExt):
         ti_feedback["VERSION_NUMBER"] == 1 and \
         ti_feedback["STATE"] == TorqueInterceptorState.RUN and \
         not any(ti_feedback[s] for s in ("VIOL", "ERROR", "RAMP_DOWN"))
+      ret_sp.torqueInterceptorReady = self.ti_lkas_allowed
     else:
       ret.steeringTorque = cp.vl["STEER_TORQUE"]["STEER_TORQUE_SENSOR"]
       ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > LKAS_LIMITS.STEER_THRESHOLD, 5)
