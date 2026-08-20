@@ -87,8 +87,9 @@ class CarState(CarStateBase, CarStateExt):
       ti_feedback = cp_body.vl["TI_FEEDBACK"]
       ret.steeringTorque = ti_feedback["TI_TORQUE_SENSOR"]
       ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > 6, 5)
+      # known TI firmware reports VERSION_NUMBER 1 or 16 (0x10); both are healthy
       self.ti_lkas_allowed = cp_body.can_valid and \
-        ti_feedback["VERSION_NUMBER"] == 1 and \
+        ti_feedback["VERSION_NUMBER"] in (1, 16) and \
         ti_feedback["STATE"] == TorqueInterceptorState.RUN and \
         not any(ti_feedback[s] for s in ("VIOL", "ERROR", "RAMP_DOWN"))
       ret_sp.torqueInterceptorReady = self.ti_lkas_allowed

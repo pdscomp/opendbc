@@ -240,8 +240,10 @@ class TestMazdaTorqueInterceptorState:
 
   @pytest.mark.parametrize(("overrides", "healthy"), [
     ({}, True),
+    ({"VERSION_NUMBER": 16}, True),  # current firmware, captured healthy frame 7f7f100300000030
     ({"VERSION_NUMBER": 0}, False),
     ({"VERSION_NUMBER": 2}, False),
+    ({"VERSION_NUMBER": 17}, False),
     ({"STATE": 0}, False),
     ({"STATE": 1}, False),
     ({"STATE": 2}, False),
