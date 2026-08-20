@@ -151,8 +151,10 @@ static bool mazda_ti_torque_cmd_checks(int desired_torque) {
 }
 
 static bool mazda_get_quality_flag_valid(const CANPacket_t *msg) {
+  // Known-good version bytes: 0x01 (original) and 0x10 (current firmware; every captured
+  // healthy frame from Paul's car, e.g. 7f7f100300000030, reports 0x10).
   bool valid = (msg->addr == MAZDA_TI_FEEDBACK) && ((int)msg->bus == MAZDA_AUX) &&
-               (msg->data[2] == 1U) && (msg->data[3] == 3U) &&
+               ((msg->data[2] == 1U) || (msg->data[2] == 0x10U)) && (msg->data[3] == 3U) &&
                (msg->data[4] == 0U) && (msg->data[5] == 0U) && (msg->data[6] == 0U);
   if (msg->addr == MAZDA_TI_FEEDBACK) {
     mazda_ti_feedback_healthy = valid;

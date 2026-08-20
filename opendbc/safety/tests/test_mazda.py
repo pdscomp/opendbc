@@ -270,7 +270,7 @@ class MazdaTorqueInterceptorSafetyMixin:
 
   def test_ti_feedback_semantics_and_recovery(self):
     invalid = (
-      {"version": 0}, {"version": 2}, {"state": 0}, {"state": 1}, {"state": 2},
+      {"version": 0}, {"version": 2}, {"version": 17}, {"state": 0}, {"state": 1}, {"state": 2},
       {"violation": 1}, {"error": 1}, {"ramp_down": 1},
     )
     for fields in invalid:
@@ -282,6 +282,14 @@ class MazdaTorqueInterceptorSafetyMixin:
         self.assertTrue(self._rx(ti_feedback()))
         self.safety.set_controls_allowed(True)
         self.assertTrue(self._tx(ti_command(6)))
+
+  def test_ti_accepts_current_firmware_version_byte(self):
+    # current TI firmware reports version byte 0x10; captured healthy frame 7f7f100300000030
+    self._reset_ti_safety()
+    self._enable_ti()
+    self.assertTrue(self._rx(ti_feedback(version=0x10)))
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(ti_command(6)))
 
   def test_ti_wrong_feedback_bus_or_length_cannot_enable(self):
     for msg in (ti_feedback(bus=0), ti_feedback(bus=2), ti_feedback(length=7)):
