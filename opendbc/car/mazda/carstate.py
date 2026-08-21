@@ -212,7 +212,10 @@ class CarState(CarStateBase, CarStateExt):
     # it should be enabled (steer lockout). Don't warn until we actually get lkas active
     # and lose it again, i.e, after initial lkas activation
     if ti_enabled:
-      ret.steerFaultTemporary = not self.ti_lkas_allowed
+      # TI drops out of RUN at low speed/standstill by design (steering-current
+      # self-protection) and recovers on roll-out — only fault at real speed,
+      # where not-ready is genuine and the soft-disable takeover is warranted.
+      ret.steerFaultTemporary = not self.ti_lkas_allowed and ret.vEgo > 10
     elif self.CP.minSteerSpeed > 0:
       ret.steerFaultTemporary = self.lkas_allowed_speed and lkas_blocked
     else:

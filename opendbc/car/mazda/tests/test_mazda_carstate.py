@@ -42,10 +42,16 @@ def _ti_feedback(torque=0, **overrides):
   return CANPacker("mazda_2017").make_can_msg("TI_FEEDBACK", 1, values)
 
 
-def _feed_ti(CI, frames=1, torque=0, **overrides):
+def _feed_ti(CI, frames=1, torque=0, speed_kph=None, **overrides):
+  if speed_kph is not None and frames == 1:
+    frames = 6  # vEgo kalman needs a few samples to converge
   ret = None
+  packer = CANPacker("mazda_2017")
   for i in range(1, frames + 1):
-    ret, _ = CI.update([(i * 20_000_000, [_ti_feedback(torque, **overrides)])])
+    msgs = [_ti_feedback(torque, **overrides)]
+    if speed_kph is not None:
+      msgs.append(packer.make_can_msg("WHEEL_SPEEDS", 0, {"FL": speed_kph, "FR": speed_kph, "RL": speed_kph, "RR": speed_kph}))
+    ret, _ = CI.update([(i * 20_000_000, msgs)])
   return ret
 
 
@@ -253,37 +259,51 @@ class TestMazdaTorqueInterceptorState:
   ])
   def test_feedback_health_controls_temporary_fault(self, overrides, healthy):
     CI = _interface(ti=True)
-    ret = _feed_ti(CI, **overrides)
+    ret = _feed_ti(CI, speed_kph=50, **overrides)  # fault only faults at speed
     assert CI.can_parsers[Bus.body].can_valid
     assert CI.CS.ti_lkas_allowed is healthy
     assert ret.steerFaultTemporary is not healthy
+
+  def test_low_speed_ti_dropout_is_not_a_fault(self):
+    # captured standstill pattern: TI self-protects to OFF+VIOL=0x11 at stops
+    # and while creeping; that is normal, not a steering fault
+    CI = _interface(ti=True)
+    for speed_kph in (0, 5, 14):  # 14.6 kph dropout observed in rlogs
+      ret = _feed_ti(CI, speed_kph=speed_kph, STATE=1, VIOL=0x11)
+      assert not CI.CS.ti_lkas_allowed
+      assert not ret.steerFaultTemporary
 
   def test_missing_stale_and_wrong_bus_feedback_are_unhealthy(self):
     CI = _interface(ti=True)
     ret, _ = CI.update([])
     assert not CI.CS.ti_lkas_allowed
-    assert ret.steerFaultTemporary
+    assert not ret.steerFaultTemporary  # not moving: no fault
 
-    msg = _ti_feedback()
-    ret, _ = CI.update([(20_000_000, [(msg[0], msg[1], 0)])])
-    assert not CI.CS.ti_lkas_allowed
-    assert ret.steerFaultTemporary
-
-    ret = _feed_ti(CI)
+    ret = _feed_ti(CI, speed_kph=50)  # healthy at speed
     assert CI.CS.ti_lkas_allowed
     assert not ret.steerFaultTemporary
 
+    # feedback only ever arriving on the wrong bus: never healthy, faults at speed
+    CI2 = _interface(ti=True)
+    fb = _ti_feedback()
+    ws = CANPacker("mazda_2017").make_can_msg("WHEEL_SPEEDS", 0, {"FL": 50, "FR": 50, "RL": 50, "RR": 50})
+    for i in range(1, 7):
+      ret, _ = CI2.update([(i * 20_000_000, [(fb[0], fb[1], 0), ws])])
+    assert not CI2.CS.ti_lkas_allowed
+    assert ret.steerFaultTemporary
+
+    # stale: healthy stream stops while at speed
     for i in range(5):
-      ret, _ = CI.update([((300 + i * 10) * 1_000_000, [])])
+      ret, _ = CI.update([((500 + i * 100) * 1_000_000, [])])
     assert not CI.CS.ti_lkas_allowed
     assert ret.steerFaultTemporary
 
   def test_one_healthy_frame_recovers_after_protocol_error(self):
     CI = _interface(ti=True)
-    ret = _feed_ti(CI, ERROR=1)
+    ret = _feed_ti(CI, speed_kph=50, ERROR=1)
     assert not CI.CS.ti_lkas_allowed
     assert ret.steerFaultTemporary
-    ret = _feed_ti(CI)
+    ret = _feed_ti(CI, speed_kph=50)
     assert CI.CS.ti_lkas_allowed
     assert not ret.steerFaultTemporary
 
