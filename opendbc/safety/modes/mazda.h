@@ -151,18 +151,21 @@ static bool mazda_ti_torque_cmd_checks(int desired_torque) {
 }
 
 static bool mazda_get_quality_flag_valid(const CANPacket_t *msg) {
-  // Known-good version bytes: 0x01 (original) and 0x10 (current firmware; every captured
-  // healthy frame from Paul's car, e.g. 7f7f100300000030, reports 0x10).
-  bool valid = (msg->addr == MAZDA_TI_FEEDBACK) && ((int)msg->bus == MAZDA_AUX) &&
-               ((msg->data[2] == 1U) || (msg->data[2] == 0x10U)) && (msg->data[3] == 3U) &&
-               (msg->data[4] == 0U) && (msg->data[5] == 0U) && (msg->data[6] == 0U);
+  // Integrity only: right addr/bus, a known version byte, plausible state. The TI
+  // routinely drops to OFF with VIOL bits at standstill (steering-current
+  // self-protection) and during boot — those are NOT rx faults, and failing the
+  // quality flag on them spams safetyRxChecksInvalid ("controls mismatch") at
+  // every stop. Health (RUN + zero fault bytes) gates torque separately below.
+  bool integrity = (msg->addr == MAZDA_TI_FEEDBACK) && ((int)msg->bus == MAZDA_AUX) &&
+                   ((msg->data[2] == 1U) || (msg->data[2] == 0x10U)) && (msg->data[3] <= 3U);
   if (msg->addr == MAZDA_TI_FEEDBACK) {
-    mazda_ti_feedback_healthy = valid;
-    if (valid) {
+    mazda_ti_feedback_healthy = integrity && (msg->data[3] == 3U) &&
+                                (msg->data[4] == 0U) && (msg->data[5] == 0U) && (msg->data[6] == 0U);
+    if (integrity) {
       mazda_ti_feedback_ts = microsecond_timer_get();
     }
   }
-  return valid;
+  return integrity;
 }
 
 static bool mazda_fwd_hook(int bus_num, int addr) {

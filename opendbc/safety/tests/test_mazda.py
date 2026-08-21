@@ -269,11 +269,9 @@ class MazdaTorqueInterceptorSafetyMixin:
     self.assertTrue(self._tx(ti_command(6)))
 
   def test_ti_feedback_semantics_and_recovery(self):
-    invalid = (
-      {"version": 0}, {"version": 2}, {"version": 17}, {"state": 0}, {"state": 1}, {"state": 2},
-      {"violation": 1}, {"error": 1}, {"ramp_down": 1},
-    )
-    for fields in invalid:
+    # integrity rejections: unknown version bytes — not a frame from a known TI,
+    # so the rx check fails (this is what flags safetyRxChecksInvalid)
+    for fields in ({"version": 0}, {"version": 2}, {"version": 17}):
       with self.subTest(fields=fields):
         self._reset_ti_safety()
         self._enable_ti()
@@ -281,6 +279,20 @@ class MazdaTorqueInterceptorSafetyMixin:
         self.assertFalse(self._tx(ti_command(6)))
         self.assertTrue(self._rx(ti_feedback()))
         self.safety.set_controls_allowed(True)
+        self.assertTrue(self._tx(ti_command(6)))
+
+    # health rejections: OFF/DISCOVER/DRIVER_OVER and fault-byte frames are
+    # legitimate TI states (boot, standstill self-protection) — the frame itself
+    # is valid and must NOT poison the rx check, but torque stays blocked
+    for fields in ({"state": 0}, {"state": 1}, {"state": 2},
+                   {"violation": 1}, {"violation": 0x11}, {"error": 1}, {"ramp_down": 1}):
+      with self.subTest(fields=fields):
+        self._reset_ti_safety()
+        self._enable_ti()
+        self.assertTrue(self._rx(ti_feedback(**fields)))
+        self.safety.set_controls_allowed(True)
+        self.assertFalse(self._tx(ti_command(6)))
+        self.assertTrue(self._rx(ti_feedback()))
         self.assertTrue(self._tx(ti_command(6)))
 
   def test_ti_accepts_current_firmware_version_byte(self):
