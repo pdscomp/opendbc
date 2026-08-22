@@ -87,6 +87,16 @@ class TorqueInterceptorControllerParams:
   STEER_MAX_RT_DELTA = 192
   STEER_RT_INTERVAL_NS = 250_000_000
 
+  def __init__(self, CP=None):
+    # Same EPS as the stock 2022+ tune (values.py CarControllerParams): the TI injects into the
+    # same torque sensor line, so the EPS clip ceilings and hardware rate limit apply identically.
+    # 1200 below ~32 mph for low-speed authority, 800 above; the EPS clips past its ceiling.
+    if CP is not None and CP.flags & MazdaFlags.STEER_TO_ZERO:
+      self.STEER_MAX_LOOKUP = ([0., 14.2, 14.5], [1200, 1200, 800])
+      self.STEER_DELTA_UP = 12
+      self.STEER_DELTA_DOWN = 25
+      self.STEER_MAX_RT_DELTA = 384
+
 
 @dataclass
 class MazdaCarDocs(CarDocs):
