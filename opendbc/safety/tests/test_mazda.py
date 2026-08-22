@@ -331,45 +331,45 @@ class MazdaTorqueInterceptorSafetyMixin:
   def test_ti_rate_and_absolute_limits(self):
     self._enable_ti()
     timer = 0
-    for torque in range(6, 601, 6):
-      if torque > 6 and torque % 192 == 6:
+    for torque in range(12, 1201, 12):
+      if torque > 12 and torque % 384 == 12:
         timer += 250_001
         self.safety.set_timer(timer)
         self.assertTrue(self._rx(ti_feedback()))
-        self.assertTrue(self._tx(ti_command(torque - 6)))
+        self.assertTrue(self._tx(ti_command(torque - 12)))
       self.assertTrue(self._tx(ti_command(torque)))
-    self.assertFalse(self._tx(ti_command(601)))
+    self.assertFalse(self._tx(ti_command(1201)))
 
     self._reset_ti_safety()
     self._enable_ti()
-    self.assertTrue(self._tx(ti_command(6)))
-    self.assertFalse(self._tx(ti_command(13)))
+    self.assertTrue(self._tx(ti_command(12)))
+    self.assertFalse(self._tx(ti_command(25)))
 
     self._reset_ti_safety()
     self._enable_ti()
-    for torque in range(6, 31, 6):
+    for torque in range(12, 61, 12):
       self.assertTrue(self._tx(ti_command(torque)))
-    self.assertTrue(self._tx(ti_command(15)))
-    self.assertFalse(self._tx(ti_command(-7)))
+    self.assertTrue(self._tx(ti_command(35)))
+    self.assertFalse(self._tx(ti_command(-13)))
 
   def test_ti_driver_and_realtime_limits(self):
-    self._enable_ti(-30)
-    self.assertFalse(self._tx(ti_command(6)))
+    self._enable_ti(-45)
+    self.assertFalse(self._tx(ti_command(12)))
 
     self._reset_ti_safety()
     self._enable_ti()
-    for torque in range(6, 193, 6):
+    for torque in range(12, 385, 12):
       self.assertTrue(self._tx(ti_command(torque)))
-    self.assertFalse(self._tx(ti_command(198)))
+    self.assertFalse(self._tx(ti_command(396)))
 
     self._reset_ti_safety()
     self._enable_ti()
-    for torque in range(6, 193, 6):
+    for torque in range(12, 385, 12):
       self.assertTrue(self._tx(ti_command(torque)))
     self.safety.set_timer(250_001)
     self.assertTrue(self._rx(ti_feedback()))
-    self.assertTrue(self._tx(ti_command(192)))
-    self.assertTrue(self._tx(ti_command(198)))
+    self.assertTrue(self._tx(ti_command(384)))
+    self.assertTrue(self._tx(ti_command(396)))
 
   def test_stock_and_ti_torque_histories_are_independent(self):
     self._enable_ti()
