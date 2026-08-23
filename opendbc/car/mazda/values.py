@@ -86,6 +86,9 @@ class TorqueInterceptorControllerParams:
   STEER_DRIVER_FACTOR = 1
   STEER_MAX_RT_DELTA = 192
   STEER_RT_INTERVAL_NS = 250_000_000
+  # below this speed the TI gets zero torque: kills standstill wheel wiggle and the
+  # TI's own ~30 s self-protection latch, which trips even at low command when stopped
+  STANDSTILL_ZERO_SPEED = 1.0  # m/s (~2.2 mph)
 
   def __init__(self, CP=None):
     if CP is not None and CP.flags & MazdaFlags.STEER_TO_ZERO:

@@ -65,6 +65,8 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
         else:
           ti_steer_max = self.ti_params.STEER_MAX
         ti_new_torque = int(round(CC.actuators.torque * ti_steer_max))
+        if CS.out.vEgoRaw < self.ti_params.STANDSTILL_ZERO_SPEED:
+          ti_new_torque = 0
         ti_apply_torque = apply_driver_steer_torque_limits(ti_new_torque, self.ti_apply_torque_last,
                                                            CS.out.steeringTorque, self.ti_params, ti_steer_max)
         if self.ti_rt_torque_last_ts is None:
