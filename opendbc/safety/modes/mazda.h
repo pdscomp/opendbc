@@ -109,10 +109,11 @@ static void mazda_ti_reset_torque_state(void) {
 }
 
 static bool mazda_ti_torque_cmd_checks(int desired_torque) {
-  // Mirrors the stock STEER_TO_ZERO envelope (same EPS, its clip ceilings apply to injected
-  // torque identically); controllers on older EPS self-cap lower, this is the looser backstop.
+  // Rates mirror the stock STEER_TO_ZERO tune (EPS accepts 12/frame); magnitude is capped at the
+  // TI hardware's real ceiling. Non-STZ controllers self-cap lower (6/15/192) under this backstop.
   const TorqueSteeringLimits MAZDA_TI_STEERING_LIMITS = {
-    .max_torque = 1200,
+    // TI DAC output stage self-protects above ~600 (VIOL=0x11, ~30 s latch) — 2026-08-22 drive data
+    .max_torque = 600,
     .max_rate_up = 12,
     .max_rate_down = 25,
     .max_rt_delta = 384,

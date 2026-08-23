@@ -162,26 +162,7 @@ class TestMazdaTorqueInterceptorController:
       _steering_step(controller, state, now_nanos=frame * 10_000_000)
     sends = _steering_step(controller, state, now_nanos=1_190_000_000)
     assert _command_torque(sends, 0x243) == stock_max
-    assert _command_torque(sends, 0x249) == (1200 if steer_to_zero else 600)
-
-  def test_ti_ceiling_tapers_with_speed_on_steer_to_zero_eps(self):
-    controller = _steering_controller(ti=True, steer_to_zero=True)
-    state = _steering_state()
-    for frame in range(140):
-      sends = _steering_step(controller, state, now_nanos=frame * 10_000_000)
-    assert _command_torque(sends, 0x249) == 1200
-    state.out.vEgoRaw = 20.  # above the ~32 mph taper point
-    for frame in range(140, 300):
-      sends = _steering_step(controller, state, now_nanos=frame * 10_000_000)
-    assert _command_torque(sends, 0x249) == 800
-    state.out.vEgoRaw = 14.35  # mid-taper
-    for frame in range(300, 340):
-      sends = _steering_step(controller, state, now_nanos=frame * 10_000_000)
-    assert _command_torque(sends, 0x249) == 1000
-    state.out.vEgoRaw = 20.
-    for frame in range(340, 480):
-      sends = _steering_step(controller, state, torque=-1., now_nanos=frame * 10_000_000)
-    assert _command_torque(sends, 0x249) == -800
+    assert _command_torque(sends, 0x249) == 600
 
   def test_ti_history_does_not_reuse_stock_history(self):
     controller = _steering_controller(ti=True)

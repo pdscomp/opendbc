@@ -331,14 +331,14 @@ class MazdaTorqueInterceptorSafetyMixin:
   def test_ti_rate_and_absolute_limits(self):
     self._enable_ti()
     timer = 0
-    for torque in range(12, 1201, 12):
+    for torque in range(12, 601, 12):
       if torque > 12 and torque % 384 == 12:
         timer += 250_001
         self.safety.set_timer(timer)
         self.assertTrue(self._rx(ti_feedback()))
         self.assertTrue(self._tx(ti_command(torque - 12)))
       self.assertTrue(self._tx(ti_command(torque)))
-    self.assertFalse(self._tx(ti_command(1201)))
+    self.assertFalse(self._tx(ti_command(601)))
 
     self._reset_ti_safety()
     self._enable_ti()
@@ -353,7 +353,7 @@ class MazdaTorqueInterceptorSafetyMixin:
     self.assertFalse(self._tx(ti_command(-13)))
 
   def test_ti_driver_and_realtime_limits(self):
-    self._enable_ti(-45)
+    self._enable_ti(-30)
     self.assertFalse(self._tx(ti_command(12)))
 
     self._reset_ti_safety()
