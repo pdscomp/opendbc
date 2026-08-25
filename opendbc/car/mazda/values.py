@@ -164,6 +164,12 @@ class CAR(Platforms):
     [MazdaCarDocs("Mazda CX-9 2021-23", video="https://youtu.be/dA3duO4a0O4")],
     MazdaCarSpecs(mass=4409 * CV.LB_TO_KG, wheelbase=2.93, steerRatio=17.6)
   )
+  # ponytail: KG-platform twin of the CX-9 — specs copied from CX-9 2021 until real FW/tune data lands.
+  # No FW_VERSIONS entry yet: CX-8 FW is unverified and cloning CX-9's list would exact-match-tie real CX-9s.
+  MAZDA_CX8_2022 = MazdaPlatformConfig(
+    [MazdaCarDocs("Mazda CX-8 2022-24")],
+    MazdaCarSpecs(mass=4409 * CV.LB_TO_KG, wheelbase=2.93, steerRatio=17.6)
+  )
   MAZDA_CX5_2022 = MazdaPlatformConfig(
     [MazdaCarDocs("Mazda CX-5 2022-25")],
     MazdaCX5_2022CarSpecs(mass=3728 * CV.LB_TO_KG, wheelbase=2.698, steerRatio=18.1),  # 15.5 is factory spec; 18.1 from paramsd learner (2.9M samples)
