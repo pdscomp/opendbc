@@ -78,7 +78,15 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
           self.ti_rt_torque_last = ti_apply_torque
           self.ti_rt_torque_last_ts = now_nanos
       else:
-        self.ti_rt_torque_last = 0
+        # Soft release: slew to zero at down-rate instead of a hard cut. Instant drops are felt
+        # as tugs at low speed (route 8762fabfa41efd82_00000008--3fa3fc5a9a: 5 cuts of 232-600
+        # units at 10-18 kph, all on latActive falling edges). Real faults still hard-block in panda.
+        prev = self.ti_apply_torque_last
+        if prev > 0:
+          ti_apply_torque = max(prev - self.ti_params.STEER_DELTA_DOWN, 0)
+        elif prev < 0:
+          ti_apply_torque = min(prev + self.ti_params.STEER_DELTA_DOWN, 0)
+        self.ti_rt_torque_last = ti_apply_torque
         self.ti_rt_torque_last_ts = now_nanos
       self.ti_apply_torque_last = ti_apply_torque
 

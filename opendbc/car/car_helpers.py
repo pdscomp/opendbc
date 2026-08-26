@@ -159,10 +159,7 @@ def get_car(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_multip
 
   if candidate is None:
     carlog.error({"event": "car doesn't match any fingerprints", "fingerprints": repr(fingerprints)})
-    # TEMPORARY (zoom-cx8): fall back to CX-8 instead of MOCK so the data-collection branch
-    # can't brick the car when real FW doesn't match anything. carFw from the failed query is
-    # still recorded below. REMOVE once the CX-8 FW_VERSIONS entry lands.
-    candidate = "MAZDA_CX8_2022"
+    candidate = "MOCK"
 
   CarInterface = interfaces[candidate]
   CP: CarParams = CarInterface.get_params(candidate, fingerprints, car_fw, alpha_long_allowed, is_release, docs=False)
