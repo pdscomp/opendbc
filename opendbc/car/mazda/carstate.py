@@ -189,7 +189,7 @@ class CarState(CarStateBase, CarStateExt):
       #  - After the radar has been silenced once, hearing it again is a genuine
       #    two-master conflict (dropped tester present, S3 recovery, or the ordered
       #    hand-back) and is a real accFaulted. The alpha-long toggle monitor relies on
-      #    exactly this edge as its "stock radar heard" acknowledgement.
+      #    exactly this edge as its "stock radar heard" acknowledgment.
       if len(cp.vl_all["CRZ_INFO"]["CTR1"]) > 0:
         self.stock_radar_silent_frames = 0
       else:
