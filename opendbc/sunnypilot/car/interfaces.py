@@ -8,12 +8,13 @@ import functools
 import json
 import os
 import numpy as np
-from typing import NamedTuple
+from typing import Any, NamedTuple
 from collections.abc import Callable
 
 from opendbc.car import structs
 from opendbc.car.can_definitions import CanRecvCallable, CanSendCallable
 from opendbc.car.hyundai.values import HyundaiFlags
+from opendbc.car.mazda.values import MazdaFlags, MazdaSafetyFlags
 from opendbc.car.subaru.values import SubaruFlags
 from opendbc.car.toyota.values import ToyotaSafetyFlags
 from opendbc.sunnypilot.car.hyundai.enable_radar_tracks import enable_radar_tracks as hyundai_enable_radar_tracks
@@ -154,19 +155,33 @@ class NanoFFModel:
 
 
 def setup_interfaces(CI, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
-                     params_list: list[dict[str, str]] | None = None,
+                     params_list: list[dict[str, Any]] | None = None,
                      can_recv: CanRecvCallable | None = None, can_send: CanSendCallable | None = None) -> None:
   if params_list is None:
     params_list = []
 
   params_dict = {k: v for param in params_list for k, v in param.items()}
 
+  _initialize_mazda(CP, params_dict)
   _initialize_custom_longitudinal_tuning(CI, CP, CP_SP, params_dict)
   _initialize_coop_steering(CP, CP_SP, params_dict)
   _initialize_tesla_mads_screen_button(CP, CP_SP, params_dict)
   _initialize_radar_tracks(CP, CP_SP, can_recv, can_send)
   _initialize_stop_and_go(CP, CP_SP, params_dict)
   _initialize_toyota(CP, CP_SP, params_dict)
+
+
+def _initialize_mazda(CP: structs.CarParams, params_dict: dict[str, Any]) -> None:
+  if CP.brand != 'mazda' or not bool(params_dict.get("TorqueInterceptorEnabled", False)):
+    return
+  if not CP.flags & MazdaFlags.GEN1:
+    raise ValueError("Torque Interceptor requires Mazda GEN1")
+
+  CP.flags |= MazdaFlags.TORQUE_INTERCEPTOR.value
+  CP.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
+  CP.dashcamOnly = False
+  CP.minSteerSpeed = 0
+  CP.steerAtStandstill = True
 
 
 def _initialize_custom_longitudinal_tuning(CI, CP: structs.CarParams, CP_SP: structs.CarParamsSP,

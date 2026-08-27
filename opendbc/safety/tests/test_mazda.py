@@ -8,12 +8,27 @@ import opendbc.safety.tests.common as common
 from opendbc.safety.tests.common import CANPackerSafety, make_msg
 
 
+def ti_command(torque: int, *, bus: int = 1, duplicate: int | None = None, key: int = 0xC461CE60,
+               reserved_request: int = 0, reserved_duplicate: int = 0, length: int = 8):
+  raw = torque + 2048
+  duplicate_raw = raw if duplicate is None else duplicate + 2048
+  dat = bytes([((raw >> 8) & 0xF) | reserved_request, raw & 0xFF,
+               ((duplicate_raw >> 8) & 0xF) | reserved_duplicate, duplicate_raw & 0xFF]) + key.to_bytes(4, "big")
+  return make_msg(bus, 0x249, length, dat[:length])
+
+
+def ti_feedback(torque: int = 0, *, bus: int = 1, version: int = 1, state: int = 3,
+                violation: int = 0, error: int = 0, ramp_down: int = 0, length: int = 8):
+  dat = bytes([torque + 127, 0, version, state, violation, error, ramp_down, 0])
+  return make_msg(bus, 0x24A, length, dat[:length])
+
+
 class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTest):
 
   TX_MSGS = [[0x243, 0], [0x09d, 0], [0x440, 0]]
   STANDSTILL_THRESHOLD = .1
   RELAY_MALFUNCTION_ADDRS = {0: (0x243, 0x440)}
-  FWD_BLACKLISTED_ADDRS = {2: [0x243, 0x440]}
+  FWD_BLACKLISTED_ADDRS = {0: [0x249], 2: [0x243, 0x249, 0x440]}
 
   MAX_RATE_UP = 12
   MAX_RATE_DOWN = 25
@@ -337,6 +352,182 @@ class TestMazdaLongitudinalSafety(TestMazdaSafety, common.LongitudinalAccelSafet
         self.assertEqual(not active, self._tx(msg))
         self.safety.set_controls_allowed(True)
         self.assertTrue(self._tx(msg))
+
+
+class MazdaTorqueInterceptorSafetyMixin:
+  TI_PARAM: int
+
+  def _reset_ti_safety(self):
+    self.safety.set_safety_hooks(CarParams.SafetyModel.mazda, self.TI_PARAM)
+    self.safety.init_tests()
+
+  def _enable_ti(self, torque: int = 0):
+    for _ in range(6):
+      self.assertTrue(self._rx(ti_feedback(torque)))
+    self.safety.set_controls_allowed(True)
+
+  def _torque_driver_msg(self, torque):
+    return ti_feedback(torque)
+
+  def test_reset_driver_torque_measurements(self):
+    for torque in (-85, 85):
+      for _ in range(6):
+        self.assertTrue(self._rx(ti_feedback(torque)))
+    self.assertNotEqual(self.safety.get_torque_driver_min(), 0)
+    self.assertNotEqual(self.safety.get_torque_driver_max(), 0)
+    self._reset_ti_safety()
+    self.assertEqual(self.safety.get_torque_driver_min(), 0)
+    self.assertEqual(self.safety.get_torque_driver_max(), 0)
+
+  def test_ti_requires_healthy_fresh_feedback(self):
+    self.safety.set_controls_allowed(True)
+    self.assertFalse(self._tx(ti_command(6)))
+    self._enable_ti()
+    self.assertTrue(self._tx(ti_command(6)))
+    self.safety.set_timer(40_000)
+    self.assertTrue(self._tx(ti_command(12)))
+    self.safety.set_timer(40_001)
+    self.assertFalse(self._tx(ti_command(18)))
+    self.assertTrue(self._tx(ti_command(0)))
+    self.assertTrue(self._rx(ti_feedback()))
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(ti_command(6)))
+
+  def test_ti_feedback_semantics_and_recovery(self):
+    # integrity rejections: unknown version bytes — not a frame from a known TI,
+    # so the rx check fails (this is what flags safetyRxChecksInvalid)
+    for fields in ({"version": 0}, {"version": 2}, {"version": 17}):
+      with self.subTest(fields=fields):
+        self._reset_ti_safety()
+        self._enable_ti()
+        self.assertFalse(self._rx(ti_feedback(**fields)))
+        self.assertFalse(self._tx(ti_command(6)))
+        self.assertTrue(self._rx(ti_feedback()))
+        self.safety.set_controls_allowed(True)
+        self.assertTrue(self._tx(ti_command(6)))
+
+    # health rejections: OFF/DISCOVER/DRIVER_OVER and fault-byte frames are
+    # legitimate TI states (boot, standstill self-protection) — the frame itself
+    # is valid and must NOT poison the rx check, but torque stays blocked
+    for fields in ({"state": 0}, {"state": 1}, {"state": 2},
+                   {"violation": 1}, {"violation": 0x11}, {"error": 1}, {"ramp_down": 1}):
+      with self.subTest(fields=fields):
+        self._reset_ti_safety()
+        self._enable_ti()
+        self.assertTrue(self._rx(ti_feedback(**fields)))
+        self.safety.set_controls_allowed(True)
+        self.assertFalse(self._tx(ti_command(6)))
+        self.assertTrue(self._rx(ti_feedback()))
+        self.assertTrue(self._tx(ti_command(6)))
+
+  def test_ti_accepts_current_firmware_version_byte(self):
+    # current TI firmware reports version byte 0x10; captured healthy frame 7f7f100300000030
+    self._reset_ti_safety()
+    self._enable_ti()
+    self.assertTrue(self._rx(ti_feedback(version=0x10)))
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(ti_command(6)))
+
+  def test_ti_wrong_feedback_bus_or_length_cannot_enable(self):
+    for msg in (ti_feedback(bus=0), ti_feedback(bus=2), ti_feedback(length=7)):
+      with self.subTest(bus=msg.bus, length=msg.data_len_code):
+        self._reset_ti_safety()
+        self.safety.set_controls_allowed(True)
+        self._rx(msg)
+        self.assertFalse(self._tx(ti_command(6)))
+
+  def test_ti_command_structure(self):
+    for msg in (
+      ti_command(6, duplicate=5), ti_command(6, key=0xC461CE61),
+      ti_command(6, reserved_request=0xA0), ti_command(6, reserved_duplicate=0x50),
+      ti_command(6, bus=0), ti_command(6, bus=2), ti_command(6, length=7),
+    ):
+      with self.subTest(bus=msg.bus, length=msg.data_len_code):
+        self._reset_ti_safety()
+        self._enable_ti()
+        self.assertFalse(self._tx(msg))
+
+  def test_ti_controls_disabled(self):
+    self.assertTrue(self._rx(ti_feedback()))
+    self.safety.set_controls_allowed(False)
+    self.assertFalse(self._tx(ti_command(6)))
+    self.assertTrue(self._tx(ti_command(0)))
+
+  def test_ti_rate_and_absolute_limits(self):
+    self._enable_ti()
+    timer = 0
+    for torque in range(6, 601, 6):
+      if torque > 6 and torque % 192 == 6:
+        timer += 250_001
+        self.safety.set_timer(timer)
+        self.assertTrue(self._rx(ti_feedback()))
+        self.assertTrue(self._tx(ti_command(torque - 6)))
+      self.assertTrue(self._tx(ti_command(torque)))
+    self.assertFalse(self._tx(ti_command(601)))
+
+    self._reset_ti_safety()
+    self._enable_ti()
+    self.assertTrue(self._tx(ti_command(6)))
+    self.assertFalse(self._tx(ti_command(13)))
+
+    self._reset_ti_safety()
+    self._enable_ti()
+    for torque in range(6, 31, 6):
+      self.assertTrue(self._tx(ti_command(torque)))
+    self.assertTrue(self._tx(ti_command(15)))
+    self.assertFalse(self._tx(ti_command(-7)))
+
+  def test_ti_driver_and_realtime_limits(self):
+    self._enable_ti(-30)
+    self.assertFalse(self._tx(ti_command(6)))
+
+    self._reset_ti_safety()
+    self._enable_ti()
+    for torque in range(6, 193, 6):
+      self.assertTrue(self._tx(ti_command(torque)))
+    self.assertFalse(self._tx(ti_command(198)))
+
+    self._reset_ti_safety()
+    self._enable_ti()
+    for torque in range(6, 193, 6):
+      self.assertTrue(self._tx(ti_command(torque)))
+    self.safety.set_timer(250_001)
+    self.assertTrue(self._rx(ti_feedback()))
+    self.assertTrue(self._tx(ti_command(192)))
+    self.assertTrue(self._tx(ti_command(198)))
+
+  def test_stock_and_ti_torque_histories_are_independent(self):
+    self._enable_ti()
+    stock = self.packer.make_can_msg_safety("CAM_LKAS", 0, {"LKAS_REQUEST": 12})
+    for ti_torque in range(6, 31, 6):
+      self.assertTrue(self._tx(stock))
+      self.assertTrue(self._tx(ti_command(ti_torque)))
+
+
+class TestMazdaTorqueInterceptorSafety(MazdaTorqueInterceptorSafetyMixin, TestMazdaSafety):
+  TI_PARAM = MazdaSafetyFlags.TORQUE_INTERCEPTOR
+  TX_MSGS = TestMazdaSafety.TX_MSGS + [[0x249, 1]]
+
+  def setUp(self):
+    self.packer = CANPackerSafety("mazda_2017")
+    self.safety = libsafety_py.libsafety
+    self._reset_ti_safety()
+
+
+class TestMazdaLongitudinalTorqueInterceptorSafety(MazdaTorqueInterceptorSafetyMixin, TestMazdaLongitudinalSafety):
+  TI_PARAM = MazdaSafetyFlags.LONG | MazdaSafetyFlags.TORQUE_INTERCEPTOR
+  TX_MSGS = TestMazdaLongitudinalSafety.TX_MSGS + [[0x249, 1]]
+
+  def setUp(self):
+    self.packer = CANPackerSafety("mazda_2017")
+    self.safety = libsafety_py.libsafety
+    self._reset_ti_safety()
+
+  def test_longitudinal_controls_remain_enabled(self):
+    standby = bytes.fromhex("01ffe3ffc000005d")
+    self.assertTrue(self._tx(make_msg(0, 0x21B, dat=standby)))
+    self.safety.set_controls_allowed(False)
+    self.assertFalse(self._tx(self.packer.make_can_msg_safety("CRZ_CTRL", 0, {"CRZ_ACTIVE": True})))
 
 
 class TestMazdaIgnition(unittest.TestCase):
