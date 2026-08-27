@@ -30,6 +30,7 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     self.params = CarControllerParams(CP)
     self.apply_torque_last = 0
     # ponytail: keep TI RT state local until another host torque path needs the same limiter.
+    self.ti_params = TorqueInterceptorControllerParams(CP)
     self.ti_apply_torque_last = 0
     self.ti_rt_torque_last = 0
     self.ti_rt_torque_last_ts = None
@@ -64,15 +65,22 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
 
     if self.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR:
       if CC.latActive and CS.ti_lkas_allowed:
-        ti_new_torque = int(round(CC.actuators.torque * TorqueInterceptorControllerParams.STEER_MAX))
+        if hasattr(self.ti_params, 'STEER_MAX_LOOKUP'):
+          ti_steer_max = round(float(np.interp(CS.out.vEgoRaw, self.ti_params.STEER_MAX_LOOKUP[0],
+                                               self.ti_params.STEER_MAX_LOOKUP[1])))
+        else:
+          ti_steer_max = self.ti_params.STEER_MAX
+        ti_new_torque = int(round(CC.actuators.torque * ti_steer_max))
+        if CS.out.vEgoRaw < self.ti_params.STANDSTILL_ZERO_SPEED:
+          ti_new_torque = 0
         ti_apply_torque = apply_driver_steer_torque_limits(ti_new_torque, self.ti_apply_torque_last,
-                                                           CS.out.steeringTorque, TorqueInterceptorControllerParams)
+                                                           CS.out.steeringTorque, self.ti_params, ti_steer_max)
         if self.ti_rt_torque_last_ts is None:
           self.ti_rt_torque_last_ts = now_nanos
-        highest_torque = max(self.ti_rt_torque_last, 0) + TorqueInterceptorControllerParams.STEER_MAX_RT_DELTA
-        lowest_torque = min(self.ti_rt_torque_last, 0) - TorqueInterceptorControllerParams.STEER_MAX_RT_DELTA
+        highest_torque = max(self.ti_rt_torque_last, 0) + self.ti_params.STEER_MAX_RT_DELTA
+        lowest_torque = min(self.ti_rt_torque_last, 0) - self.ti_params.STEER_MAX_RT_DELTA
         ti_apply_torque = max(min(ti_apply_torque, highest_torque), lowest_torque)
-        if now_nanos - self.ti_rt_torque_last_ts > TorqueInterceptorControllerParams.STEER_RT_INTERVAL_NS:
+        if now_nanos - self.ti_rt_torque_last_ts > self.ti_params.STEER_RT_INTERVAL_NS:
           self.ti_rt_torque_last = ti_apply_torque
           self.ti_rt_torque_last_ts = now_nanos
       else:
