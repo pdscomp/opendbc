@@ -5,7 +5,7 @@ from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.carstate import CarState
 from opendbc.car.mazda.radar_interface import RadarInterface
-from opendbc.car.mazda.values import CAR, DBC, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, MazdaSafetyFlags
+from opendbc.car.mazda.values import CAR, DBC, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, MazdaFlags, MazdaSafetyFlags
 
 
 class CarInterface(CarInterfaceBase):
@@ -24,7 +24,9 @@ class CarInterface(CarInterfaceBase):
     # rather than by model, so an EPS swapped into an older Mazda is recognized as what it is.
     steer_to_zero = candidate == CAR.MAZDA_CX5_2022 or \
       any(fw.ecu == 'eps' and fw.fwVersion in STEER_TO_ZERO_EPS_FW for fw in car_fw)
-    if not steer_to_zero:
+    if steer_to_zero:
+      ret.flags |= MazdaFlags.STEER_TO_ZERO.value
+    else:
       ret.minSteerSpeed = LKAS_LIMITS.DISABLE_SPEED * CV.KPH_TO_MS
 
     # CX-9 2021 verified against route 00000004--97e4328f4f: same message set at the same

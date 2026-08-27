@@ -174,3 +174,4 @@ class CarControlSP:
 @auto_dataclass
 class CarStateSP:
   speedLimit: float = auto_field()
+  torqueInterceptorReady: bool = auto_field()

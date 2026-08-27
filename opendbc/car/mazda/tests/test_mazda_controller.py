@@ -15,7 +15,7 @@ from opendbc.car.mazda.longitudinal import (LEAD_DEBOUNCE_FRAMES, RADAR_SESSION_
                                             RESUME_BLIP_DELAY_FRAMES, RESUME_BLIP_FRAMES, RESUME_UNLATCH_LATCHED_FRAMES,
                                             AdvertisedLead, RadarSessionManager, RadarSessionState, StandstillHold)
 from opendbc.car.mazda.interface import CarInterface
-from opendbc.car.mazda.values import CAR, CarControllerParams
+from opendbc.car.mazda.values import CAR, CarControllerParams, MazdaFlags, TorqueInterceptorControllerParams
 
 
 class TestCarControllerParams:
@@ -24,7 +24,7 @@ class TestCarControllerParams:
   def cx5_2022_params(self):
     class FakeCP:
       carFingerprint = CAR.MAZDA_CX5_2022
-      minSteerSpeed = 0.0   # steer_to_zero -> CX-5 2022+ EPS present
+      flags = MazdaFlags.GEN1 | MazdaFlags.STEER_TO_ZERO
     return CarControllerParams(FakeCP())
 
   @pytest.fixture
@@ -32,14 +32,14 @@ class TestCarControllerParams:
     # A CX-5 2022+ EPS swapped into (or shared by) another Mazda: different model, same EPS.
     class FakeCP:
       carFingerprint = CAR.MAZDA_CX9_2021
-      minSteerSpeed = 0.0
+      flags = MazdaFlags.GEN1 | MazdaFlags.STEER_TO_ZERO
     return CarControllerParams(FakeCP())
 
   @pytest.fixture
   def pre_2022_params(self):
     class FakeCP:
       carFingerprint = CAR.MAZDA_CX5
-      minSteerSpeed = 12.5   # no CX-5 EPS -> low-speed lockout, minSteerSpeed > 0
+      flags = MazdaFlags.GEN1
     return CarControllerParams(FakeCP())
 
   def test_cx5_2022_has_lookup(self, cx5_2022_params):
@@ -67,7 +67,7 @@ class TestCarControllerParams:
     assert cx5_2022_params.STEER_DRIVER_MULTIPLIER == 15
 
   def test_eps_swap_gets_cx5_tune(self, eps_swap_params):
-    # EPS present (minSteerSpeed == 0) on a non-CX-5 model still gets the higher-authority tune
+    # EPS capability on a non-CX-5 model still gets the higher-authority tune
     assert eps_swap_params.STEER_MAX == 1200
     assert eps_swap_params.STEER_DRIVER_MULTIPLIER == 15
     assert hasattr(eps_swap_params, 'STEER_MAX_LOOKUP')
@@ -76,6 +76,132 @@ class TestCarControllerParams:
     assert not hasattr(pre_2022_params, 'STEER_MAX_LOOKUP')
     assert pre_2022_params.STEER_MAX == 800
     assert pre_2022_params.STEER_DRIVER_MULTIPLIER == 1
+
+  def test_ti_speed_override_does_not_select_high_authority_stock_tune(self):
+    params = CarControllerParams(SimpleNamespace(flags=MazdaFlags.GEN1 | MazdaFlags.TORQUE_INTERCEPTOR))
+    assert params.STEER_MAX == 800
+    assert not hasattr(params, 'STEER_MAX_LOOKUP')
+
+  def test_steer_to_zero_eps_keeps_high_authority_tune_with_ti(self):
+    flags = MazdaFlags.GEN1 | MazdaFlags.STEER_TO_ZERO | MazdaFlags.TORQUE_INTERCEPTOR
+    params = CarControllerParams(SimpleNamespace(flags=flags))
+    assert params.STEER_MAX == 1200
+    assert hasattr(params, 'STEER_MAX_LOOKUP')
+
+
+def _steering_controller(*, ti=False, steer_to_zero=False):
+  CP = CarInterface.get_params(CAR.MAZDA_CX5, {0: {}, 1: {}, 2: {}}, [], alpha_long=False,
+                               is_release=False, docs=False)
+  if ti:
+    CP.flags |= MazdaFlags.TORQUE_INTERCEPTOR.value
+  if steer_to_zero:
+    CP.flags |= MazdaFlags.STEER_TO_ZERO.value
+  controller = CarController({Bus.pt: "mazda_2017"}, CP, structs.CarParamsSP())
+  controller.frame = 1  # HUD output is unrelated to these steering checks
+  return controller
+
+
+def _steering_state(*, healthy=True, driver_torque=0, speed=0.):
+  return SimpleNamespace(
+    out=SimpleNamespace(vEgoRaw=speed, steeringTorque=driver_torque, brakePressed=False),
+    ti_lkas_allowed=healthy,
+    crz_btns_counter=0,
+    cancel_button=1,  # suppress unrelated ICBM output
+    lkas_allowed_speed=True,
+    cam_lkas={"BIT_1": 0, "ERR_BIT_1": 0, "ERR_BIT_2": 0},
+    cam_laneinfo={s: 0 for s in (
+      "LINE_VISIBLE", "LINE_NOT_VISIBLE", "LANE_LINES", "BIT1", "BIT2", "BIT3", "NO_ERR_BIT", "ERR_BIT", "S1", "S1_HBEAM",
+    )},
+  )
+
+
+def _steering_step(controller, state, torque=1., lat_active=True, now_nanos=0):
+  control = structs.CarControl()
+  control.latActive = lat_active
+  control.actuators.torque = torque
+  _, sends = controller.update(control.as_reader(), structs.CarControlSP(), state, now_nanos)
+  return sends
+
+
+def _command_torque(sends, address):
+  dat = next(dat for addr, dat, _ in sends if addr == address)
+  return (((dat[0] & 0xf) << 8) | dat[1]) - 2048
+
+
+class TestMazdaTorqueInterceptorController:
+  @pytest.mark.parametrize(("torque", "expected"), [
+    (-600, "05a805a8c461ce60"),
+    (0, "08000800c461ce60"),
+    (600, "0a580a58c461ce60"),
+  ])
+  def test_canonical_command_vectors_have_duplicate_request_key_and_no_counter(self, torque, expected):
+    msg = mazdacan.create_ti_steering_control(CANPacker("mazda_2017"), torque)
+    assert msg == (0x249, bytes.fromhex(expected), 1)
+    assert mazdacan.create_ti_steering_control(CANPacker("mazda_2017"), torque) == msg
+
+  def test_stock_output_is_unchanged_and_ti_adds_an_independent_command(self):
+    state = _steering_state()
+    stock_sends = _steering_step(_steering_controller(), state)
+    ti_sends = _steering_step(_steering_controller(ti=True), state)
+    assert not any(addr == 0x249 for addr, _, _ in stock_sends)
+    assert next(msg for msg in stock_sends if msg[0] == 0x243) == next(msg for msg in ti_sends if msg[0] == 0x243)
+    assert _command_torque(ti_sends, 0x249) == TorqueInterceptorControllerParams.STEER_DELTA_UP
+
+  @pytest.mark.parametrize(("healthy", "lat_active", "expected"), [
+    (True, True, 6),
+    (False, True, 0),
+    (True, False, 0),
+  ])
+  def test_ti_health_and_lateral_request_gate_torque(self, healthy, lat_active, expected):
+    sends = _steering_step(_steering_controller(ti=True), _steering_state(healthy=healthy), lat_active=lat_active)
+    assert _command_torque(sends, 0x249) == expected
+
+  @pytest.mark.parametrize(("steer_to_zero", "stock_max"), [(False, 800), (True, 1200)])
+  def test_stock_and_ti_authority_are_independent(self, steer_to_zero, stock_max):
+    controller = _steering_controller(ti=True, steer_to_zero=steer_to_zero)
+    state = _steering_state()
+    for frame in range(119):
+      _steering_step(controller, state, now_nanos=frame * 10_000_000)
+    sends = _steering_step(controller, state, now_nanos=1_190_000_000)
+    assert _command_torque(sends, 0x243) == stock_max
+    assert _command_torque(sends, 0x249) == 600
+
+  def test_ti_history_does_not_reuse_stock_history(self):
+    controller = _steering_controller(ti=True)
+    state = _steering_state(healthy=False)
+    for frame in range(19):
+      _steering_step(controller, state, now_nanos=frame * 10_000_000)
+    sends = _steering_step(controller, state, now_nanos=190_000_000)
+    assert _command_torque(sends, 0x243) == 200
+    assert _command_torque(sends, 0x249) == 0
+
+    state.ti_lkas_allowed = True
+    sends = _steering_step(controller, state, now_nanos=200_000_000)
+    assert _command_torque(sends, 0x249) == 6
+
+  def test_ti_rate_and_driver_limits(self):
+    controller = _steering_controller(ti=True)
+    state = _steering_state()
+    assert _command_torque(_steering_step(controller, state), 0x249) == 6
+    assert _command_torque(_steering_step(controller, state), 0x249) == 12
+    for _ in range(14):
+      _steering_step(controller, state)
+    sends = _steering_step(controller, state)
+    assert _command_torque(sends, 0x249) == 102
+    assert _command_torque(_steering_step(controller, state, torque=-1.), 0x249) == 87
+    assert _command_torque(_steering_step(controller, state, lat_active=False), 0x249) == 0
+
+    controller = _steering_controller(ti=True)
+    assert _command_torque(_steering_step(controller, _steering_state(driver_torque=-30)), 0x249) == 0
+
+  def test_ti_real_time_delta_is_limited_over_250_ms(self):
+    controller = _steering_controller(ti=True)
+    state = _steering_state()
+    torques = [_command_torque(_steering_step(controller, state, now_nanos=1_000_000_000), 0x249) for _ in range(40)]
+    assert torques[-1] == TorqueInterceptorControllerParams.STEER_MAX_RT_DELTA == 192
+
+    assert _command_torque(_steering_step(controller, state, now_nanos=1_250_000_001), 0x249) == 192
+    assert _command_torque(_steering_step(controller, state, now_nanos=1_250_000_001), 0x249) == 198
 
 
 def crz_info_reference_checksum(dat):
