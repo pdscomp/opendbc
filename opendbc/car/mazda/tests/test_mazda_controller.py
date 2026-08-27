@@ -101,7 +101,7 @@ def _steering_controller(*, ti=False, steer_to_zero=False):
   return controller
 
 
-def _steering_state(*, healthy=True, driver_torque=0, speed=0.):
+def _steering_state(*, healthy=True, driver_torque=0, speed=5.):  # above the TI standstill gate
   return SimpleNamespace(
     out=SimpleNamespace(vEgoRaw=speed, steeringTorque=driver_torque, brakePressed=False),
     ti_lkas_allowed=healthy,
@@ -129,6 +129,17 @@ def _command_torque(sends, address):
 
 
 class TestMazdaTorqueInterceptorController:
+  def test_standstill_zeroes_ti_command(self):
+    controller = _steering_controller(ti=True)
+    state = _steering_state(speed=0.)
+    for frame in range(50):
+      sends = _steering_step(controller, state, now_nanos=frame * 10_000_000)
+    assert _command_torque(sends, 0x249) == 0
+    state.out.vEgoRaw = 5.  # above the 1 m/s standstill gate
+    for frame in range(50, 200):
+      sends = _steering_step(controller, state, now_nanos=frame * 10_000_000)
+    assert _command_torque(sends, 0x249) == 600
+
   @pytest.mark.parametrize(("torque", "expected"), [
     (-600, "05a805a8c461ce60"),
     (0, "08000800c461ce60"),

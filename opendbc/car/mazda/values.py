@@ -113,6 +113,19 @@ class TorqueInterceptorControllerParams:
   STEER_DRIVER_FACTOR = 1
   STEER_MAX_RT_DELTA = 192
   STEER_RT_INTERVAL_NS = 250_000_000
+  # below this speed the TI gets zero torque: kills standstill wheel wiggle and the
+  # TI's own ~30 s self-protection latch, which trips even at low command when stopped
+  STANDSTILL_ZERO_SPEED = 1.0  # m/s (~2.2 mph)
+
+  def __init__(self, CP=None):
+    if CP is not None and CP.flags & MazdaFlags.STEER_TO_ZERO:
+      # Rate upgrade from the zoompilot 2022+ EPS tune only. The magnitude envelope does NOT
+      # port: the TI's DAC output stage self-protects above ~600 (STATE=OFF + VIOL=0x11, latched
+      # ~30 s). First-drive evidence 2026-08-22: 9 cutouts, every at-speed entry preceded by
+      # |cmd| >600 in the prior 3 s; none without. STEER_MAX stays 600.
+      self.STEER_DELTA_UP = 12
+      self.STEER_DELTA_DOWN = 25
+      self.STEER_MAX_RT_DELTA = 384
 
 
 @dataclass
