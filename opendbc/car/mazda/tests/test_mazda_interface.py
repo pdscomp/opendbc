@@ -115,6 +115,14 @@ class TestMazdaTorqueInterceptorParams:
     assert CP.minSteerSpeed == 0
     assert CP.steerAtStandstill
 
+  def test_cx8_carries_owner_validated_gains(self):
+    # the fork controller defaults are kp 0.8 / ki 0.15; the CX-8 runs the owner's
+    # StarPilot-validated 0.6 / 0.35 through the per-car capnp channel
+    CP = _params(CAR.MAZDA_CX8_2022)
+    assert CP.lateralTuning.torque.kp == pytest.approx(0.6)
+    assert CP.lateralTuning.torque.ki == pytest.approx(0.35)
+    assert _params(CAR.MAZDA_CX5_2022).lateralTuning.torque.kp == 0.0  # unset = controller module defaults
+
   def test_enabled_param_composes_flags_and_long_safety(self):
     CP = _params(CAR.MAZDA_CX5_2022, alpha_long=True)
     _setup_ti(CP)
