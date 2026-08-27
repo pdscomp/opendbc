@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from enum import IntFlag, StrEnum
+from enum import IntEnum, IntFlag, StrEnum
 
 from opendbc.car import Bus, CarSpecs, DbcDict, DT_CTRL, PlatformConfig, Platforms
 from opendbc.car.carlog import carlog
@@ -86,9 +86,9 @@ class CarControllerParams:
 
   def __init__(self, CP):
     # Gate the higher-authority steering tune on the CX-5 2022+ EPS, not the car model, so the
-    # CX-9 that shares this EPS and CX-5-EPS swaps keep it. steer_to_zero sets minSteerSpeed == 0
-    # (interface.py / STEER_TO_ZERO_EPS_FW) — the same EPS-present proxy carstate.py gates on.
-    if CP.minSteerSpeed == 0:
+    # CX-9 that shares this EPS and CX-5-EPS swaps keep it. TI also lowers minSteerSpeed, so
+    # the explicit EPS capability flag is the only safe identity for this tune.
+    if CP.flags & MazdaFlags.STEER_TO_ZERO:
       self.STEER_MAX = 1200        # theoretical max_steer 2047; EPS clips above ceiling per speed
       # 1200 below 32 mph for full low-speed authority and feedforward overshoot.
       # 800 above for smoother highway steering with 22% PID headroom above EPS ceiling (620).
@@ -102,6 +102,17 @@ class CarControllerParams:
       self.STEER_DELTA_UP = 10
       self.STEER_DELTA_DOWN = 25
       self.STEER_DRIVER_MULTIPLIER = 1    # upstream stock
+
+
+class TorqueInterceptorControllerParams:
+  STEER_MAX = 600
+  STEER_DELTA_UP = 6
+  STEER_DELTA_DOWN = 15
+  STEER_DRIVER_ALLOWANCE = 15
+  STEER_DRIVER_MULTIPLIER = 40
+  STEER_DRIVER_FACTOR = 1
+  STEER_MAX_RT_DELTA = 192
+  STEER_RT_INTERVAL_NS = 250_000_000
 
 
 @dataclass
@@ -124,10 +135,20 @@ class MazdaFlags(IntFlag):
   # Static flags
   # Gen 1 hardware: same CAN messages and same camera
   GEN1 = 1
+  STEER_TO_ZERO = 2
+  TORQUE_INTERCEPTOR = 4
 
 
 class MazdaSafetyFlags(IntFlag):
   LONG = 1
+  TORQUE_INTERCEPTOR = 2
+
+
+class TorqueInterceptorState(IntEnum):
+  DISCOVER = 0
+  OFF = 1
+  DRIVER_OVER = 2
+  RUN = 3
 
 
 class WMI(StrEnum):
