@@ -200,7 +200,10 @@ class TestMazdaTorqueInterceptorController:
     sends = _steering_step(controller, state)
     assert _command_torque(sends, 0x249) == 102
     assert _command_torque(_steering_step(controller, state, torque=-1.), 0x249) == 87
-    assert _command_torque(_steering_step(controller, state, lat_active=False), 0x249) == 0
+    # soft release: latActive loss slews to zero at DELTA_DOWN (15/frame), no hard cut
+    assert _command_torque(_steering_step(controller, state, lat_active=False), 0x249) == 72
+    for expected in (57, 42, 27, 12, 0):
+      assert _command_torque(_steering_step(controller, state, lat_active=False), 0x249) == expected
 
     controller = _steering_controller(ti=True)
     assert _command_torque(_steering_step(controller, _steering_state(driver_torque=-30)), 0x249) == 0
