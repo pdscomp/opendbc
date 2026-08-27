@@ -14,7 +14,7 @@ from collections.abc import Callable
 from opendbc.car import structs
 from opendbc.car.can_definitions import CanRecvCallable, CanSendCallable
 from opendbc.car.hyundai.values import HyundaiFlags
-from opendbc.car.mazda.values import MazdaFlags, MazdaSafetyFlags
+from opendbc.car.mazda.values import CAR, MazdaFlags, MazdaSafetyFlags
 from opendbc.car.subaru.values import SubaruFlags
 from opendbc.car.toyota.values import ToyotaSafetyFlags
 from opendbc.sunnypilot.car.hyundai.enable_radar_tracks import enable_radar_tracks as hyundai_enable_radar_tracks
@@ -172,7 +172,11 @@ def setup_interfaces(CI, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
 
 
 def _initialize_mazda(CP: structs.CarParams, params_dict: dict[str, Any]) -> None:
-  if CP.brand != 'mazda' or not bool(params_dict.get("TorqueInterceptorEnabled", False)):
+  # The CX-8 platform definition itself assumes the interceptor (TI tuning params live in
+  # values.py) and is dashcamOnly without it, so treat TI as intrinsic there: a wiped or
+  # lost TorqueInterceptorEnabled param must not drop the car into dashcam mode.
+  ti_enabled = bool(params_dict.get("TorqueInterceptorEnabled", False)) or CP.carFingerprint == CAR.MAZDA_CX8_2022
+  if CP.brand != 'mazda' or not ti_enabled:
     return
   if not CP.flags & MazdaFlags.GEN1:
     raise ValueError("Torque Interceptor requires Mazda GEN1")

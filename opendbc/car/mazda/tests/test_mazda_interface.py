@@ -105,6 +105,16 @@ class TestMazdaTorqueInterceptorParams:
     _setup_ti(CP, enabled=False)
     assert (CP.flags, CP.safetyConfigs[0].safetyParam, CP.minSteerSpeed, CP.steerAtStandstill) == before
 
+  def test_cx8_ti_is_intrinsic_without_param(self):
+    # a wiped TorqueInterceptorEnabled param must not drop the CX-8 into dashcam mode
+    CP = _params(CAR.MAZDA_CX8_2022)
+    assert CP.dashcamOnly
+    _setup_ti(CP, enabled=False)
+    assert CP.flags & MazdaFlags.TORQUE_INTERCEPTOR
+    assert not CP.dashcamOnly
+    assert CP.minSteerSpeed == 0
+    assert CP.steerAtStandstill
+
   def test_enabled_param_composes_flags_and_long_safety(self):
     CP = _params(CAR.MAZDA_CX5_2022, alpha_long=True)
     _setup_ti(CP)
