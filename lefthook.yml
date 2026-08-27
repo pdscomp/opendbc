@@ -28,3 +28,5 @@ test:
     # *** tests ***
     unittest:
       run: unittest-parallel -j4
+    mazda-pytest:
+      run: python -m pytest -c /dev/null --confcutdir=. -p no:cacheprovider -q opendbc/car/mazda/tests/test_mazda_interface.py opendbc/car/mazda/tests/test_mazda_controller.py opendbc/car/mazda/tests/test_mazda_carstate.py

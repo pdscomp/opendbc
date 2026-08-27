@@ -33,7 +33,7 @@ def _setup_ti(CP, enabled=True):
 
 
 class TestMazdaEpsSwap:
-  """A 2022+ CX-5 EPS swapped into an older Mazda brings the EPS-derived behaviour with it.
+  """A 2022+ CX-5 EPS swapped into an older Mazda brings the EPS-derived behavior with it.
 
   Pre-2022 Mazdas are dashcam only because their EPS locks steering out after ~5 s hands-off
   and below 45 kph. That lockout lives in the EPS, so the swap lifts it. Everything keyed on
@@ -104,6 +104,16 @@ class TestMazdaTorqueInterceptorParams:
     before = (CP.flags, CP.safetyConfigs[0].safetyParam, CP.minSteerSpeed, CP.steerAtStandstill)
     _setup_ti(CP, enabled=False)
     assert (CP.flags, CP.safetyConfigs[0].safetyParam, CP.minSteerSpeed, CP.steerAtStandstill) == before
+
+  def test_cx8_ti_is_intrinsic_without_param(self):
+    # a wiped TorqueInterceptorEnabled param must not drop the CX-8 into dashcam mode
+    CP = _params(CAR.MAZDA_CX8_2022)
+    assert CP.dashcamOnly
+    _setup_ti(CP, enabled=False)
+    assert CP.flags & MazdaFlags.TORQUE_INTERCEPTOR
+    assert not CP.dashcamOnly
+    assert CP.minSteerSpeed == 0
+    assert CP.steerAtStandstill
 
   def test_enabled_param_composes_flags_and_long_safety(self):
     CP = _params(CAR.MAZDA_CX5_2022, alpha_long=True)
