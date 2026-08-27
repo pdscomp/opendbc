@@ -215,12 +215,19 @@ class TorqueInterceptorControllerParams:
   STANDSTILL_ZERO_SPEED = 1.0  # m/s (~2.2 mph)
 
   def __init__(self, CP=None):
-    if CP is not None and CP.flags & MazdaFlags.STEER_TO_ZERO:
-      # Rate upgrade from the zoompilot 2022+ EPS tune only. The magnitude envelope does NOT
-      # port: the TI's DAC output stage self-protects above ~600 (STATE=OFF + VIOL=0x11, latched
-      # ~30 s). First-drive evidence 2026-08-22: 9 cutouts, every at-speed entry preceded by
-      # |cmd| >600 in the prior 3 s; none without. STEER_MAX stays 600.
+    if CP is None:
+      return
+    # 12/frame up-rate: proven on the 2022+ EPS generation (KSD5 via STZ tune). Extended to the
+    # CX-8 (K19G, same generation): route 8762fabfa41efd82_00000006--712dfc7c83 showed the base
+    # 6/frame limiter saturating on 9.5-22.6% of command frames. Validate on-device: watch for
+    # EPS steer faults on hard transitions.
+    if CP.flags & MazdaFlags.STEER_TO_ZERO or CP.carFingerprint == "MAZDA_CX8_2022":
       self.STEER_DELTA_UP = 12
+    if CP.flags & MazdaFlags.STEER_TO_ZERO:
+      # The magnitude envelope does NOT port: the TI's DAC output stage self-protects above
+      # ~600 (STATE=OFF + VIOL=0x11, latched ~30 s). First-drive evidence 2026-08-22: 9 cutouts,
+      # every at-speed entry preceded by |cmd| >600 in the prior 3 s; none without.
+      # STEER_MAX stays 600.
       self.STEER_DELTA_DOWN = 25
       self.STEER_MAX_RT_DELTA = 384
 
@@ -301,6 +308,12 @@ class CAR(Platforms):
     [MazdaCarDocs("Mazda CX-9 2021-23", video="https://youtu.be/dA3duO4a0O4")],
     MazdaCarSpecs(mass=4409 * CV.LB_TO_KG, wheelbase=2.93, steerRatio=17.6),
     wmis={WMI.JAPAN_CROSSOVER}, chassis_codes={'TC'}, years={'M', 'N', 'P'},  # 2021-23
+  )
+  # KG-platform twin of the CX-9. Mass (1850 kg kerb) and wheelbase owner-verified; steerRatio 17.6
+  # confirmed via route analysis. Overall dimensions 4900x1840x1730 (no CarParams fields for these).
+  MAZDA_CX8_2022 = MazdaPlatformConfig(
+    [MazdaCarDocs("Mazda CX-8 2022-24")],
+    MazdaCarSpecs(mass=1850, wheelbase=2.93, steerRatio=17.6)
   )
   MAZDA_CX5_2022 = MazdaPlatformConfig(
     [MazdaCarDocs("Mazda CX-5 2022-25")],
