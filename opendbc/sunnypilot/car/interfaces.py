@@ -94,8 +94,9 @@ def get_speed_dep_config_for_car(CP):
   An entry measured on a zero-min-steer-speed EPS (e.g. an EPS-swapped car) declares
   requires_steer_to_zero: its LAF values were learned under that EPS's STEER_MAX
   schedule, and the same model with its stock EPS runs a different schedule, so the
-  seeds would be mis-scaled there. minSteerSpeed == 0 is the CP-level signature of
-  that EPS (the same proxy the carcontroller keys the schedule on).
+  seeds would be mis-scaled there. minSteerSpeed == 0 is a cheap CP-level signature of
+  that EPS; the carcontroller keys the schedule on MazdaFlags.STEER_TO_ZERO itself
+  (TI also zeroes minSteerSpeed, so the flag is the only exact identity).
 
   An active entry carries the platform's STEER_MAX schedule under 'steer_max_schedule'
   when one exists: bin LAF values are normalized units learned under one scale each,
