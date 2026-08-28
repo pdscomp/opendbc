@@ -58,13 +58,6 @@ class CarInterface(CarInterfaceBase):
 
     CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
 
-    if candidate == CAR.MAZDA_CX8_2022:
-      # Owner-validated StarPilot generic-path gains.
-      # Fork controller defaults: kp 0.8 / ki 0.15 (latcontrol_torque.py module constants)
-      # Old sunnypilot defaults:  kp 1.0 / ki 0.3
-      ret.lateralTuning.torque.kp = 0.6
-      ret.lateralTuning.torque.ki = 0.35
-
     ret.centerToFront = ret.wheelbase * 0.41
 
     return ret

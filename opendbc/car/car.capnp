@@ -557,13 +557,11 @@ struct CarParams {
     steeringAngleDeadzoneDeg @5 :Float32;
     latAccelFactor @6 :Float32;
     latAccelOffset @7 :Float32;
-    # Per-car PID gain override channel (0.0 = fall back to controller module defaults).
-    # Un-deprecated for the CX-8's owner-validated gains; ordinals unchanged, wire-compatible.
-    kp @1 :Float32;
-    ki @2 :Float32;
 
     deprecated :group {
       useSteeringAngle @0 :Bool;
+      kp @1 :Float32;
+      ki @2 :Float32;
       kf @4 :Float32;
       kd @8 : Float32;
     }
