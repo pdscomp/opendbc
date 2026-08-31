@@ -32,7 +32,10 @@ class CarInterface(CarInterfaceBase):
     # CX-9 2021 verified against route 00000004--97e4328f4f: same message set at the same
     # rates, CRZ_INFO checksum holds on all 54k stock frames, radar UDS at 0x764, and the
     # same FSC camera firmware (GSH7-67XK2-U) as the CX-5 2022 this was developed on.
-    ret.alphaLongitudinalAvailable = candidate in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021)
+    # An EPS-swapped pre-2022 Mazda presents the same steer-to-zero EPS as a 2022+ car;
+    # the radar and camera keep their own firmware, but they share the same 0x764/0x706
+    # addresses and CRZ_INFO/CAM frame layouts, so the same longitudinal path applies.
+    ret.alphaLongitudinalAvailable = candidate in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) or steer_to_zero
     ret.openpilotLongitudinalControl = alpha_long and ret.alphaLongitudinalAvailable
     if ret.openpilotLongitudinalControl:
       ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.LONG.value
@@ -45,8 +48,7 @@ class CarInterface(CarInterfaceBase):
 
     # Older Mazdas are dashcam only for one reason: their EPS locks steering out after ~5 s of
     # hands-off and below 45 kph. That is a property of the EPS, not of the car, so a car with
-    # the 2022+ EPS swapped in is controllable and lifts with it. Longitudinal stays keyed on the
-    # model above: the radar and camera are not part of an EPS swap.
+    # the 2022+ EPS swapped in is controllable and lifts with it.
     ret.dashcamOnly = candidate not in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) and not steer_to_zero
 
     ret.enableBsm = 0x477 in fingerprint[0]

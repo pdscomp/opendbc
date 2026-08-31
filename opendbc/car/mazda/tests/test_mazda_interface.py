@@ -36,8 +36,7 @@ class TestMazdaEpsSwap:
   """A 2022+ CX-5 EPS swapped into an older Mazda brings the EPS-derived behavior with it.
 
   Pre-2022 Mazdas are dashcam only because their EPS locks steering out after ~5 s hands-off
-  and below 45 kph. That lockout lives in the EPS, so the swap lifts it. Everything keyed on
-  the radar, camera or vehicle dynamics must stay keyed on the model.
+  and below 45 kph. That lockout lives in the EPS, so the swap lifts it.
   """
 
   def test_stock_older_mazda_is_dashcam_only(self):
@@ -55,9 +54,17 @@ class TestMazdaEpsSwap:
     assert CP.steerActuatorDelay == pytest.approx(0.14)
     assert CP.flags & MazdaFlags.STEER_TO_ZERO
 
-  def test_swapped_eps_does_not_unlock_longitudinal(self):
-    # the radar and camera are not part of an EPS swap, and this car keeps its own pre-2022 pair
+  def test_swapped_eps_unlocks_longitudinal(self):
+    # the steer-to-zero EPS is the hardware precondition for openpilot longitudinal on Mazda;
+    # an EPS-swapped pre-2022 car presents the same EPS as a 2022+ and shares the radar/camera
+    # frame layouts, so it qualifies for alpha long
     CP = _params(CAR.MAZDA_CX5, _eps_fw(SWAPPED_EPS_FW), alpha_long=True)
+    assert CP.alphaLongitudinalAvailable
+    assert CP.openpilotLongitudinalControl
+
+  def test_stock_eps_does_not_unlock_longitudinal(self):
+    # a stock pre-2022 EPS still locks out longitudinal
+    CP = _params(CAR.MAZDA_CX5, _eps_fw(STOCK_CX5_EPS_FW), alpha_long=True)
     assert not CP.alphaLongitudinalAvailable
     assert not CP.openpilotLongitudinalControl
 
