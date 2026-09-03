@@ -296,6 +296,28 @@ class TestTwoMasterGuard:
     ret, n = self._feed_guard(CI, 0.2, radar_alive=False, acc_active=True, start_frame=n)
     assert ret.cruiseState.enabled
 
+  def test_takeover_pending_tracks_the_blockers(self):
+    # Pending while stock cruise is engaged with the radar still master (the drive-off
+    # lockout from route 00000026); clear once the guard has latched the radar silenced.
+    from opendbc.car.mazda import mazdacan
+    CI = _interface()
+    packer = CANPacker("mazda_2017")
+
+    def feed(i, acc_active, radar_alive):
+      msgs = [packer.make_can_msg("PEDALS", 0, {"ACC_OFF": 0 if acc_active else 1,
+                                                "ACC_ACTIVE": 1 if acc_active else 0})]
+      if radar_alive:
+        msgs.append(mazdacan.create_acc_command(packer, 0, i, 0., long_active=False, acc_available=True))
+      return CI.update([(int(i * DT_CTRL * 1e9), [(m[0], m[1], m[2]) for m in msgs])])
+
+    ret_sp = None
+    for i in range(50):
+      _, ret_sp = feed(i, acc_active=True, radar_alive=True)
+    assert ret_sp.alphaLongTakeoverPending
+    for i in range(50, 50 + int((CarControllerParams.STOCK_RADAR_GUARD_T + 0.5) / DT_CTRL)):
+      _, ret_sp = feed(i, acc_active=False, radar_alive=False)
+    assert not ret_sp.alphaLongTakeoverPending
+
 
 class TestSpeedSignLimit:
   """CAM_TRAFFIC_SIGNS.SPEED_SIGN_ON is a 2-bit field carrying the display unit, not a 1-bit
