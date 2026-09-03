@@ -237,6 +237,12 @@ class CarState(CarStateBase, CarStateExt):
       ret.cruiseState.available = self.cruise_available and self.radar_was_silenced
       ret.cruiseState.enabled = self.cruise_enabled and not self.cruise_enabled_blocked
 
+      # The radar teardown only runs at standstill with stock cruise off (the UDS session
+      # disables AEB, so it is gated like disable_ecu). While the car is moving or stock
+      # cruise is engaged with the radar still master, availability stays low with nothing
+      # on screen saying why -- surface the pending state so the UI can name the wait.
+      ret_sp.alphaLongTakeoverPending = not self.radar_was_silenced and (ret.vEgo > 0.5 or self.cruise_enabled)
+
       # The FSC teardown gate requires fresh, settled CAM_LANEINFO without ERR_BIT. BIT2 is
       # excluded because it may remain set for an entire ignition cycle.
       laneinfo = cp_cam.vl["CAM_LANEINFO"]
