@@ -174,3 +174,5 @@ class CarControlSP:
 @auto_dataclass
 class CarStateSP:
   speedLimit: float = auto_field()
+  alphaLongTakeoverPending: bool = auto_field()
+  alphaLongTakeoverInitializing: bool = auto_field()
