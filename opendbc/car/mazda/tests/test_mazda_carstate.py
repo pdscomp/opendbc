@@ -297,27 +297,49 @@ class TestTwoMasterGuard:
     ret, n = self._feed_guard(CI, 0.2, radar_alive=False, acc_active=True, start_frame=n)
     assert ret.cruiseState.enabled
 
-  def test_takeover_pending_tracks_the_blockers(self):
-    # Pending while stock cruise is engaged with the radar still master (the drive-off
-    # lockout from route 00000026); clear once the guard has latched the radar silenced.
+  def test_takeover_states_track_setup_blockers_and_completion(self):
     from opendbc.car.mazda import mazdacan
     CI = _interface()
     packer = CANPacker("mazda_2017")
 
-    def feed(i, acc_active, radar_alive):
+    def feed(i, speed_kph, acc_active, radar_alive):
       msgs = [packer.make_can_msg("PEDALS", 0, {"ACC_OFF": 0 if acc_active else 1,
-                                                "ACC_ACTIVE": 1 if acc_active else 0})]
+                                                "ACC_ACTIVE": 1 if acc_active else 0}),
+              packer.make_can_msg("ENGINE_DATA", 0, {"SPEED": speed_kph}),
+              packer.make_can_msg("WHEEL_SPEEDS", 0, {
+                "FL": speed_kph, "FR": speed_kph, "RL": speed_kph, "RR": speed_kph,
+              })]
       if radar_alive:
         msgs.append(mazdacan.create_acc_command(packer, 0, i, 0., long_active=False, acc_available=True))
       return CI.update([(int(i * DT_CTRL * 1e9), [(m[0], m[1], m[2]) for m in msgs])])
 
-    ret_sp = None
-    for i in range(50):
-      _, ret_sp = feed(i, acc_active=True, radar_alive=True)
-    assert ret_sp.alphaLongTakeoverPending
-    for i in range(50, 50 + int((CarControllerParams.STOCK_RADAR_GUARD_T + 0.5) / DT_CTRL)):
-      _, ret_sp = feed(i, acc_active=False, radar_alive=False)
+    for i in range(2):
+      ret, ret_sp = feed(i, speed_kph=0, acc_active=False, radar_alive=True)
+    assert ret.standstill
+    assert ret_sp.alphaLongTakeoverInitializing
     assert not ret_sp.alphaLongTakeoverPending
+
+    ret, ret_sp = feed(2, speed_kph=20, acc_active=False, radar_alive=True)
+    assert not ret.standstill
+    assert ret_sp.alphaLongTakeoverPending
+    assert not ret_sp.alphaLongTakeoverInitializing
+
+    ret, ret_sp = feed(3, speed_kph=0, acc_active=True, radar_alive=True)
+    assert ret.standstill
+    assert ret_sp.alphaLongTakeoverPending
+    assert not ret_sp.alphaLongTakeoverInitializing
+
+    end = 4 + int((CarControllerParams.STOCK_RADAR_GUARD_T + 0.5) / DT_CTRL)
+    for i in range(4, end):
+      ret, ret_sp = feed(i, speed_kph=0, acc_active=False, radar_alive=False)
+    assert CI.CS.radar_was_silenced
+    assert not ret_sp.alphaLongTakeoverPending
+    assert not ret_sp.alphaLongTakeoverInitializing
+
+  def test_takeover_states_stay_clear_with_stock_longitudinal(self):
+    _, ret_sp = _interface(alpha_long=False).update([])
+    assert not ret_sp.alphaLongTakeoverPending
+    assert not ret_sp.alphaLongTakeoverInitializing
 
 
 class TestSpeedSignLimit:

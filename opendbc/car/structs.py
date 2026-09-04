@@ -175,3 +175,5 @@ class CarControlSP:
 class CarStateSP:
   speedLimit: float = auto_field()
   torqueInterceptorReady: bool = auto_field()
+  alphaLongTakeoverPending: bool = auto_field()
+  alphaLongTakeoverInitializing: bool = auto_field()
