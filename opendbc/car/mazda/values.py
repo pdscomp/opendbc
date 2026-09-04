@@ -202,16 +202,23 @@ class CarControllerParams:
 
 
 class TorqueInterceptorControllerParams:
+  # Peak authority stays 600: self-protection has followed prolonged near-rail demand
+  # (574-count plateaus), but equal or longer plateaus can survive -- no deterministic
+  # timer, so any demand shaping waits for on-car A/B evidence.
   STEER_MAX = 600
   STEER_DELTA_UP = 6
   STEER_DELTA_DOWN = 15
   STEER_DRIVER_ALLOWANCE = 15
   STEER_DRIVER_MULTIPLIER = 40
   STEER_DRIVER_FACTOR = 1
+  STEER_THRESHOLD = 6
+  STEER_PRESSED_FRAMES = 5
+  IMMEDIATE_OVERRIDE_THRESHOLD = 20
   STEER_MAX_RT_DELTA = 192
   STEER_RT_INTERVAL_NS = 250_000_000
-  # below this speed the TI gets zero torque: kills standstill wheel wiggle and the
-  # TI's own ~30 s self-protection latch, which trips even at low command when stopped
+  # Zero torque below this speed: standstill needs no lateral authority, and not
+  # commanding there kills wheel wiggle plus pointless demand while the TI runs its
+  # own low-speed self-protection cycles.
   STANDSTILL_ZERO_SPEED = 1.0  # m/s (~2.2 mph)
 
   def __init__(self, CP=None):

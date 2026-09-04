@@ -202,6 +202,20 @@ class TestMazdaTorqueInterceptorController:
     sends = _steering_step(_steering_controller(ti=True), _steering_state(healthy=healthy), lat_active=lat_active)
     assert _command_torque(sends, 0x249) == expected
 
+  @pytest.mark.parametrize("speed", [0.99, 1.0, 1.01])
+  def test_ti_not_ready_soft_releases_host_request_at_speed_boundary(self, speed):
+    controller = _steering_controller(ti=True)
+    state = _steering_state(speed=2.0)
+    for frame in range(10):
+      sends = _steering_step(controller, state, now_nanos=frame * 10_000_000)
+    previous = _command_torque(sends, 0x249)
+    assert previous > 0
+
+    state.out.vEgoRaw = speed
+    state.ti_lkas_allowed = False
+    sends = _steering_step(controller, state, now_nanos=100_000_000)
+    assert _command_torque(sends, 0x249) == previous - controller.ti_params.STEER_DELTA_DOWN
+
   @pytest.mark.parametrize(("steer_to_zero", "stock_max"), [(False, 800), (True, 1200)])
   def test_stock_and_ti_authority_are_independent(self, steer_to_zero, stock_max):
     controller = _steering_controller(ti=True, steer_to_zero=steer_to_zero)

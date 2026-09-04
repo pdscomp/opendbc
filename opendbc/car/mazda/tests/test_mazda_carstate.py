@@ -3,8 +3,9 @@ import pytest
 from opendbc.can import CANPacker
 from opendbc.car import Bus, DT_CTRL, gen_empty_fingerprint
 from opendbc.car.common.conversions import Conversions as CV
+from opendbc.car.mazda.carstate import TI_FEEDBACK_FRESH_FRAMES
 from opendbc.car.mazda.interface import CarInterface
-from opendbc.car.mazda.values import CAR, CarControllerParams, MazdaFlags
+from opendbc.car.mazda.values import CAR, CarControllerParams, MazdaFlags, TorqueInterceptorControllerParams
 from opendbc.sunnypilot.car.interfaces import setup_interfaces
 
 CAM_LANEINFO = 0x440
@@ -446,12 +447,46 @@ class TestCruiseStandstill:
 
 
 class TestMazdaTorqueInterceptorState:
-  def test_feedback_parser_is_ti_only_on_bus_one_at_50_hz(self):
+  def test_feedback_parser_is_ti_only_on_bus_one_without_global_liveness(self):
     assert Bus.body not in _interface(ti=False).can_parsers
 
     parser = _interface(ti=True).can_parsers[Bus.body]
     assert parser.bus == 1
-    assert parser.message_states[0x24A].frequency == 50
+    assert parser.message_states[0x24A].ignore_alive
+
+  def test_ti_feedback_gap_keeps_optional_body_parser_valid(self):
+    CI = _interface(ti=True)
+    _feed_ti(CI, speed_kph=50)
+    body = CI.can_parsers[Bus.body]
+
+    for i in range(25):
+      body.update([((100 + i) * 10_000_000, [])])
+
+    assert body.can_valid
+
+  def test_pt_and_camera_loss_still_invalidates_vehicle_can(self):
+    CI = _interface(ti=True)
+    ret = _feed_ti(CI, frames=6)
+    assert ret is not None
+
+    assert CI.can_parsers[Bus.body].can_valid
+    assert not CI.can_parsers[Bus.pt].can_valid
+    assert not CI.can_parsers[Bus.cam].can_valid
+    assert not ret.canValid
+
+  def test_ti_freshness_fails_closed_on_fourth_missed_update(self):
+    CI = _interface(ti=True)
+    _feed_ti(CI, speed_kph=50)
+    assert CI.CS.ti_lkas_allowed
+
+    for i in range(TI_FEEDBACK_FRESH_FRAMES - 1):
+      _, ret_sp = CI.update([((100 + i) * 10_000_000, [])])
+      assert CI.CS.ti_lkas_allowed
+      assert ret_sp.torqueInterceptorReady
+
+    _, ret_sp = CI.update([((100 + TI_FEEDBACK_FRESH_FRAMES) * 10_000_000, [])])
+    assert not CI.CS.ti_lkas_allowed
+    assert not ret_sp.torqueInterceptorReady
 
   @pytest.mark.parametrize(("overrides", "healthy"), [
     ({}, True),
@@ -473,14 +508,12 @@ class TestMazdaTorqueInterceptorState:
     assert CI.CS.ti_lkas_allowed is healthy
     assert ret.steerFaultTemporary is not healthy
 
-  def test_low_speed_ti_dropout_is_not_a_fault(self):
-    # captured standstill pattern: TI self-protects to OFF+VIOL=0x11 at stops
-    # and while creeping; that is normal, not a steering fault
+  @pytest.mark.parametrize(("speed_kph", "fault"), [(3.5, False), (3.6, True), (3.7, True)])
+  def test_ti_not_ready_fault_matches_zero_command_boundary(self, speed_kph, fault):
     CI = _interface(ti=True)
-    for speed_kph in (0, 5, 14):  # 14.6 kph dropout observed in rlogs
-      ret = _feed_ti(CI, speed_kph=speed_kph, STATE=1, VIOL=0x11)
-      assert not CI.CS.ti_lkas_allowed
-      assert not ret.steerFaultTemporary
+    ret = _feed_ti(CI, speed_kph=speed_kph, STATE=1, VIOL=0x11)
+    assert (ret.vEgoRaw >= TorqueInterceptorControllerParams.STANDSTILL_ZERO_SPEED) is fault
+    assert ret.steerFaultTemporary is fault
 
   def test_missing_stale_and_wrong_bus_feedback_are_unhealthy(self):
     CI = _interface(ti=True)
@@ -516,11 +549,26 @@ class TestMazdaTorqueInterceptorState:
     assert CI.CS.ti_lkas_allowed
     assert not ret.steerFaultTemporary
 
-  @pytest.mark.parametrize(("torque", "pressed"), [(6, False), (7, True), (-7, True)])
-  def test_ti_torque_and_pressed_threshold(self, torque, pressed):
-    ret = _feed_ti(_interface(ti=True), frames=6, torque=torque)
-    assert ret.steeringTorque == torque
-    assert ret.steeringPressed is pressed
+  def test_ti_small_torque_requires_existing_debounce(self):
+    CI = _interface(ti=True)
+    for _ in range(TorqueInterceptorControllerParams.STEER_PRESSED_FRAMES):
+      assert not _feed_ti(CI, frames=1, torque=7).steeringPressed
+    assert _feed_ti(CI, frames=1, torque=7).steeringPressed
+
+  @pytest.mark.parametrize("torque", [10, -10, 16, -16])
+  def test_ti_short_noise_does_not_assert_override(self, torque):
+    assert not _feed_ti(_interface(ti=True), frames=1, torque=torque).steeringPressed
+
+  @pytest.mark.parametrize("torque", [21, -21])
+  def test_ti_strong_driver_torque_asserts_immediately(self, torque):
+    assert _feed_ti(_interface(ti=True), frames=1, torque=torque).steeringPressed
+
+  def test_ti_immediate_override_keeps_release_hysteresis(self):
+    CI = _interface(ti=True)
+    assert _feed_ti(CI, frames=1, torque=21).steeringPressed
+    for _ in range(TorqueInterceptorControllerParams.STEER_PRESSED_FRAMES):
+      assert _feed_ti(CI, frames=1, torque=0).steeringPressed
+    assert not _feed_ti(CI, frames=1, torque=0).steeringPressed
 
   def test_ti_suppresses_stock_faults_while_health_drives_temporary_fault(self):
     stock = _interface(ti=False)

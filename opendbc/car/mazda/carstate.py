@@ -2,7 +2,9 @@ from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, DT_CTRL, create_button_events, structs, uds
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
-from opendbc.car.mazda.values import DBC, LKAS_LIMITS, CarControllerParams, MazdaFlags, TorqueInterceptorState
+from opendbc.car.mazda.values import (
+  DBC, LKAS_LIMITS, CarControllerParams, MazdaFlags, TorqueInterceptorControllerParams, TorqueInterceptorState,
+)
 from opendbc.sunnypilot.car.mazda.carstate_ext import CarStateExt
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -12,6 +14,7 @@ STOCK_RADAR_ALIVE_FRAMES = int(CarControllerParams.STOCK_RADAR_ALIVE_T / DT_CTRL
 STOCK_RADAR_GUARD_FRAMES = int(CarControllerParams.STOCK_RADAR_GUARD_T / DT_CTRL)
 CANCEL_CONTEXT_FRAMES = int(CarControllerParams.CANCEL_CONTEXT_T / DT_CTRL)
 CAM_LANEINFO_FRESH_FRAMES = int(CarControllerParams.CAM_LANEINFO_FRESH_T / DT_CTRL)
+TI_FEEDBACK_FRESH_FRAMES = int(0.04 / DT_CTRL)
 
 
 class CarState(CarStateBase, CarStateExt):
@@ -26,6 +29,8 @@ class CarState(CarStateBase, CarStateExt):
     self.acc_active_last = False
     self.lkas_allowed_speed = False
     self.ti_lkas_allowed = False
+    self.ti_feedback_seen = False
+    self.ti_feedback_silent_frames = TI_FEEDBACK_FRESH_FRAMES
 
     self.distance_button = 0
     self.accel_button = 0
@@ -94,10 +99,22 @@ class CarState(CarStateBase, CarStateExt):
     if ti_enabled:
       cp_body = can_parsers[Bus.body]
       ti_feedback = cp_body.vl["TI_FEEDBACK"]
+      if len(cp_body.vl_all["TI_FEEDBACK"]["VERSION_NUMBER"]) > 0:
+        self.ti_feedback_seen = True
+        self.ti_feedback_silent_frames = 0
+      else:
+        self.ti_feedback_silent_frames += 1
+      ti_feedback_fresh = self.ti_feedback_seen and self.ti_feedback_silent_frames < TI_FEEDBACK_FRESH_FRAMES
       ret.steeringTorque = ti_feedback["TI_TORQUE_SENSOR"]
-      ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > 6, 5)
+      torque_pressed = abs(ret.steeringTorque) > TorqueInterceptorControllerParams.STEER_THRESHOLD
+      if abs(ret.steeringTorque) > TorqueInterceptorControllerParams.IMMEDIATE_OVERRIDE_THRESHOLD:
+        self.steering_pressed_cnt = TorqueInterceptorControllerParams.STEER_PRESSED_FRAMES * 2 + 1
+      ret.steeringPressed = self.update_steering_pressed(
+        torque_pressed,
+        TorqueInterceptorControllerParams.STEER_PRESSED_FRAMES,
+      )
       # known TI firmware reports VERSION_NUMBER 1 or 16 (0x10); both are healthy
-      self.ti_lkas_allowed = cp_body.can_valid and \
+      self.ti_lkas_allowed = ti_feedback_fresh and \
         ti_feedback["VERSION_NUMBER"] in (1, 16) and \
         ti_feedback["STATE"] == TorqueInterceptorState.RUN and \
         not any(ti_feedback[s] for s in ("VIOL", "ERROR", "RAMP_DOWN"))
@@ -276,10 +293,10 @@ class CarState(CarStateBase, CarStateExt):
     # it should be enabled (steer lockout). Don't warn until we actually get lkas active
     # and lose it again, i.e, after initial lkas activation
     if ti_enabled:
-      # TI drops out of RUN at low speed/standstill by design (steering-current
-      # self-protection) and recovers on roll-out — only fault at real speed,
-      # where not-ready is genuine and the soft-disable takeover is warranted.
-      ret.steerFaultTemporary = not self.ti_lkas_allowed and ret.vEgo > 10
+      # Below the controller's zero-command boundary a not-ready TI is harmless. At or
+      # above it, surface the loss immediately so lateral cannot appear active without authority.
+      ret.steerFaultTemporary = not self.ti_lkas_allowed and \
+        ret.vEgoRaw >= TorqueInterceptorControllerParams.STANDSTILL_ZERO_SPEED
     elif self.CP.minSteerSpeed > 0:
       ret.steerFaultTemporary = self.lkas_allowed_speed and lkas_blocked
     else:
@@ -351,6 +368,8 @@ class CarState(CarStateBase, CarStateExt):
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], cam_messages, 2),
     }
     if CP.flags & MazdaFlags.TORQUE_INTERCEPTOR:
-      parsers[Bus.body] = CANParser(DBC[CP.carFingerprint][Bus.pt], [("TI_FEEDBACK", 50)], 1)
+      # TI feedback owns a tighter Mazda-local freshness gate. It is optional accessory
+      # traffic, so its protection pause must not poison whole-vehicle CAN validity.
+      parsers[Bus.body] = CANParser(DBC[CP.carFingerprint][Bus.pt], [("TI_FEEDBACK", float("nan"))], 1)
 
     return parsers
