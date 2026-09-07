@@ -33,6 +33,7 @@ class CarState(CarStateBase, CarStateExt):
     self.ti_feedback_silent_frames = TI_FEEDBACK_FRESH_FRAMES
 
     self.distance_button = 0
+    self.distance_more_button = 0
     self.accel_button = 0
     self.decel_button = 0
     self.cancel_button = 0
@@ -319,12 +320,14 @@ class CarState(CarStateBase, CarStateExt):
 
     # cruise control button events: distance, inc, dec, resume, cancel, and main
     prev_distance_button = self.distance_button
+    prev_distance_more_button = self.distance_more_button
     prev_accel_button = self.accel_button
     prev_decel_button = self.decel_button
     prev_cancel_button = self.cancel_button
     prev_resume_button = self.resume_button
     prev_main_button = self.main_button
     self.distance_button = cp.vl["CRZ_BTNS"]["DISTANCE_LESS"]
+    self.distance_more_button = cp.vl["CRZ_BTNS"]["DISTANCE_MORE"]
     # On CX-5 2022 the wheel "+" button toggles SET_P (not RES); RES is the resume button.
     # Verified against route 0000019c--84a5408a38 seg2/3: holding "+" emits SET_P=1, body ECU increments CRZ_SPEED.
     self.accel_button = cp.vl["CRZ_BTNS"]["SET_P"]
@@ -338,6 +341,7 @@ class CarState(CarStateBase, CarStateExt):
 
     ret.buttonEvents = [
       *create_button_events(self.distance_button, prev_distance_button, {1: ButtonType.gapAdjustCruise}),
+      *create_button_events(self.distance_more_button, prev_distance_more_button, {1: ButtonType.altButton2}),
       *create_button_events(self.accel_button, prev_accel_button, {1: ButtonType.accelCruise}),
       *create_button_events(self.decel_button, prev_decel_button, {1: ButtonType.decelCruise}),
       *create_button_events(self.cancel_button, prev_cancel_button, {1: ButtonType.cancel}),
