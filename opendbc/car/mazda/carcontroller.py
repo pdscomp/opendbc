@@ -21,7 +21,7 @@ LONG_BUSES = (0, 2)
 
 def laneinfo_present_lkas_on(cam_laneinfo: dict, CP):
   """Keep the EPS LKAS gate open on steer-to-zero Mazda EPS hardware."""
-  if CP.minSteerSpeed != 0:
+  if not CP.flags & MazdaFlags.STEER_TO_ZERO:
     return cam_laneinfo
   return {**cam_laneinfo, "LANE_LINES": 2, "LINE_VISIBLE": 1, "LINE_NOT_VISIBLE": 0}
 

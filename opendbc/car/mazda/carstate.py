@@ -283,7 +283,7 @@ class CarState(CarStateBase, CarStateExt):
     # Stock LKAS-off is only a gate for the stock GEN1 EPS. Steer-to-zero EPS hardware
     # needs the outgoing CAM_LANEINFO LKAS-on presentation above and must not reject
     # its own torque path because the camera's source frame says LKAS-off.
-    ret.invalidLkasSetting = not ti_enabled and self.CP.minSteerSpeed > 0 and \
+    ret.invalidLkasSetting = not ti_enabled and not self.CP.flags & MazdaFlags.STEER_TO_ZERO and \
       cam_laneinfo_fresh and cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0
 
     if ret.cruiseState.enabled:
