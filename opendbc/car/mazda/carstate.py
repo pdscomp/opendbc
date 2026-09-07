@@ -279,9 +279,11 @@ class CarState(CarStateBase, CarStateExt):
     ret.cruiseState.standstill = cp.vl["PEDALS"]["STANDSTILL"] == 1 and not self.CP.openpilotLongitudinalControl
     ret.cruiseState.speed = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"] * CV.KPH_TO_MS
 
-    # stock lkas should be on
-    # TODO: is this needed?
-    ret.invalidLkasSetting = not ti_enabled and cam_laneinfo_fresh and cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0
+    # Stock LKAS-off is only a gate for the stock GEN1 EPS. Steer-to-zero EPS hardware
+    # needs the outgoing CAM_LANEINFO LKAS-on presentation above and must not reject
+    # its own torque path because the camera's source frame says LKAS-off.
+    ret.invalidLkasSetting = not ti_enabled and self.CP.minSteerSpeed > 0 and \
+      cam_laneinfo_fresh and cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0
 
     if ret.cruiseState.enabled:
       if not self.lkas_allowed_speed and self.acc_active_last:

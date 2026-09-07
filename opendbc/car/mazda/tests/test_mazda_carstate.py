@@ -21,11 +21,11 @@ BIT2_LATCHED = bytes([0x41, 0b00100001, 0, 0, 0, 0, 0, 0])  # BIT2 stuck high fo
 FAULTED = bytes([0x42, 0b00000001, 0, 0, 0, 0x01, 0, 0])    # ERR_BIT (bit 40) set
 
 
-def _interface(alpha_long=True, ti=False):
+def _interface(alpha_long=True, ti=False, car=CAR.MAZDA_CX5_2022):
   fingerprint = gen_empty_fingerprint()
-  CP = CarInterface.get_params(CAR.MAZDA_CX5_2022, fingerprint, [], alpha_long=alpha_long,
+  CP = CarInterface.get_params(car, fingerprint, [], alpha_long=alpha_long,
                                is_release=False, docs=False)
-  CP_SP = CarInterface.get_params_sp(CP, CAR.MAZDA_CX5_2022, fingerprint, [],
+  CP_SP = CarInterface.get_params_sp(CP, car, fingerprint, [],
                                      alpha_long=alpha_long, is_release_sp=False, docs=False)
   if ti:
     setup_interfaces(CarInterface, CP, CP_SP, [{"TorqueInterceptorEnabled": True}])
@@ -84,6 +84,15 @@ def test_carstate_runs_with_real_parsers(alpha_long):
   assert CI.CP.openpilotLongitudinalControl == alpha_long
   for _ in range(10):
     CI.update([])
+
+
+def test_invalid_lkas_gate_is_stock_gen1_only():
+  packer = CANPacker("mazda_2017")
+  laneinfo = packer.make_can_msg("CAM_LANEINFO", 2, {"LANE_LINES": 0})
+  stock_ret, _ = _interface(car=CAR.MAZDA_CX5).update([(20_000_000, [laneinfo])])
+  stz_ret, _ = _interface().update([(20_000_000, [laneinfo])])
+  assert stock_ret.invalidLkasSetting
+  assert not stz_ret.invalidLkasSetting
 
 
 class TestFscSettleGate:
@@ -593,7 +602,7 @@ class TestMazdaTorqueInterceptorState:
     assert not _feed_ti(CI, frames=1, torque=0).steeringPressed
 
   def test_ti_suppresses_stock_faults_while_health_drives_temporary_fault(self):
-    stock = _interface(ti=False)
+    stock = _interface(ti=False, car=CAR.MAZDA_CX5)
     ti = _interface(ti=True)
     stock.update([])
     ti.update([])

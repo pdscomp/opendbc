@@ -10,7 +10,7 @@ import pytest
 from opendbc.can import CANPacker, CANParser
 from opendbc.car import Bus, DT_CTRL, structs
 from opendbc.car.mazda import mazdacan
-from opendbc.car.mazda.carcontroller import CarController
+from opendbc.car.mazda.carcontroller import CarController, laneinfo_present_lkas_on
 from opendbc.car.mazda.longitudinal import (BREAKAWAY_FRAMES, LEAD_DEBOUNCE_FRAMES, RADAR_SESSION_LIMIT_FRAMES,
                                             RELEASE_DEBOUNCE_FRAMES, RESUME_UNLATCH_LATCHED_FRAMES,
                                             AdvertisedLead, RadarSessionManager, RadarSessionState, StandstillHold)
@@ -1514,3 +1514,51 @@ class TestRadarSessionSequencing:
     # and settles back to silenced once quiet again
     sends = self._step(cc, stock_radar_alive=False, fsc_settled=True)
     assert SESSION_PROG_DAT not in self._uds(sends)
+
+
+class TestLaneinfoLkasSpoof:
+  CAM_MSG_KEYS = ["LINE_VISIBLE", "LINE_NOT_VISIBLE", "LANE_LINES", "BIT1", "BIT2", "BIT3", "NO_ERR_BIT", "ERR_BIT", "S1", "S1_HBEAM"]
+
+  @staticmethod
+  def _cam_laneinfo():
+    return {k: 0 for k in TestLaneinfoLkasSpoof.CAM_MSG_KEYS}
+
+  def test_spoof_only_on_steer_to_zero_eps(self):
+    cam = self._cam_laneinfo()
+    out = laneinfo_present_lkas_on(cam, SimpleNamespace(minSteerSpeed=0.0))
+    assert (out["LANE_LINES"], out["LINE_VISIBLE"], out["LINE_NOT_VISIBLE"]) == (2, 1, 0)
+    assert laneinfo_present_lkas_on(cam, SimpleNamespace(minSteerSpeed=12.5)) is cam
+
+  def test_spoof_survives_wire_roundtrip(self):
+    out = laneinfo_present_lkas_on(self._cam_laneinfo(), SimpleNamespace(minSteerSpeed=0.0))
+    addr, dat, bus = mazdacan.create_alert_command(CANPacker("mazda_2017"), out, False, False)
+    cp = CANParser("mazda_2017", [("CAM_LANEINFO", float("nan"))], 0)
+    cp.update([(0, [(addr, dat, bus)])])
+    assert (cp.vl["CAM_LANEINFO"]["LANE_LINES"], cp.vl["CAM_LANEINFO"]["LINE_VISIBLE"]) == (2, 1)
+
+  def test_spoof_preserves_camera_fault_state(self):
+    cam = self._cam_laneinfo() | {"BIT1": 1, "BIT2": 1, "BIT3": 1, "NO_ERR_BIT": 1, "ERR_BIT": 1, "S1": 1, "S1_HBEAM": 1}
+    out = laneinfo_present_lkas_on(cam, SimpleNamespace(minSteerSpeed=0.0))
+    addr, dat, bus = mazdacan.create_alert_command(CANPacker("mazda_2017"), out, False, False)
+    cp = CANParser("mazda_2017", [("CAM_LANEINFO", float("nan"))], 0)
+    cp.update([(0, [(addr, dat, bus)])])
+    assert {key: cp.vl["CAM_LANEINFO"][key] for key in self.CAM_MSG_KEYS[3:]} == {key: cam[key] for key in self.CAM_MSG_KEYS[3:]}
+
+  def test_call_site_emits_spoofed_laneinfo(self, cc):
+    control, control_sp, carstate = _mock_cc()
+    control.latActive = True
+    control.hudControl.visualAlert = structs.CarControl.HUDControl.VisualAlert.none
+    carstate.cam_laneinfo = self._cam_laneinfo()
+    carstate.cam_lkas = {"BIT_1": 0, "ERR_BIT_1": 0, "ERR_BIT_2": 0}
+    carstate.crz_btns_counter = 0
+    carstate.cancel_button = 1
+    carstate.lkas_allowed_speed = True
+    carstate.out.steeringTorque = 0
+    carstate.out.vEgoRaw = 10.0
+    cc.frame = 50
+
+    _, sends = cc.update(control, control_sp, carstate, 0)
+    laneinfo = next(d for a, d, b in sends if a == 0x440 and b == 0)
+    cp = CANParser("mazda_2017", [("CAM_LANEINFO", float("nan"))], 0)
+    cp.update([(0, [(0x440, laneinfo, 0)])])
+    assert cp.vl["CAM_LANEINFO"]["LANE_LINES"] == 2
