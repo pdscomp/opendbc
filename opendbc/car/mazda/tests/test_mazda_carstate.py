@@ -10,6 +10,7 @@ under braking, cruiseState.standstill and the LKAS non-delivery latch.
 """
 import pytest
 
+from opendbc.can import CANPacker
 from opendbc.car import Bus, DT_CTRL
 from opendbc.car import structs
 from opendbc.car.common.conversions import Conversions as CV
@@ -404,6 +405,20 @@ class TestCancelUnderBraking:
     assert ret.cruiseState.available
     ret, n = self.feed_pedals(CI, pk, n + 5, 0.2, brake=True, cancel=False)
     assert not ret.cruiseState.available
+
+
+class TestDistanceButtons:
+  def _events(self, distance_less, distance_more):
+    CI = car_interface()
+    packer = CANPacker("mazda_2017")
+    for i, values in enumerate(((0, 0), (distance_less, distance_more))):
+      msg = packer.make_can_msg("CRZ_BTNS", 0, {"DISTANCE_LESS": values[0], "DISTANCE_MORE": values[1]})
+      ret, _ = CI.update([(int(i * DT_CTRL * 1e9), [(msg[0], msg[1], msg[2])])])
+    return {(event.type.raw, event.pressed) for event in ret.buttonEvents}
+
+  def test_follow_distance_directions_are_distinct(self):
+    assert self._events(1, 0) == {(structs.CarState.ButtonEvent.Type.gapAdjustCruise, True)}
+    assert self._events(0, 1) == {(structs.CarState.ButtonEvent.Type.altButton2, True)}
 
 
 class TestCruiseStandstill:
