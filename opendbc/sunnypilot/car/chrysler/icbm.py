@@ -9,6 +9,7 @@ from opendbc.car import structs
 from opendbc.car.can_definitions import CanData
 from opendbc.car.chrysler import chryslercan
 from opendbc.car.chrysler.values import RAM_CARS
+from opendbc.sunnypilot.car.icbm_actuation_profile import tap_equivalent
 from opendbc.sunnypilot.car.intelligent_cruise_button_management_interface_base import IntelligentCruiseButtonManagementInterfaceBase
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -29,8 +30,9 @@ class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManageme
     das_bus = 2 if self.CP.carFingerprint in RAM_CARS else 0
 
     if self.ICBM.sendButton != SendButtonState.none:
-      accel = self.ICBM.sendButton == SendButtonState.increase
-      decel = self.ICBM.sendButton == SendButtonState.decrease
+      send_button = tap_equivalent(self.ICBM.sendButton)
+      accel = send_button == SendButtonState.increase
+      decel = send_button == SendButtonState.decrease
 
       if CS.button_counter != self.last_button_frame:
         self.last_button_frame = CS.button_counter

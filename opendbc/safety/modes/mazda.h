@@ -8,6 +8,11 @@
 #define MAZDA_CRZ_INFO      0x21bU
 #define MAZDA_CRZ_CTRL      0x21cU
 #define MAZDA_CRZ_BTNS      0x09dU
+// Physical TJA button, DBC start bit 11 (byte 1, bit 3). Observed on a CTS-equipped gen1
+// Mazda; trims without the button hold it low for the life of a drive.
+#define MAZDA_TJA_BUTTON_BIT 11U
+// sunnypilot safety param: the TJA button is the MADS lateral switch
+#define MAZDA_PARAM_SP_TJA_BUTTON 1U
 #define MAZDA_RADAR_STATIC  0x499U
 #define MAZDA_RADAR_TRACK_1 0x361U
 #define MAZDA_RADAR_TRACK_2 0x362U
@@ -28,16 +33,29 @@
 #define MAZDA_CAM  2
 
 #define MAZDA_PARAM_LONGITUDINAL 1U
-#define MAZDA_PARAM_TI           2U
+// Select the steer-to-zero EPS envelope from the firmware-derived interface flag.
+#define MAZDA_PARAM_STEER_TO_ZERO_EPS 2U
+// The same EPS hardware on firmware that keeps the 45 kph floor: the same envelope.
+#define MAZDA_PARAM_LEGACY_FW_EPS 4U
+// Fork: comma torque interceptor. Bit 8 because the old fork value 2 collided with
+// MAZDA_PARAM_STEER_TO_ZERO_EPS. panda's board routing reads this same define.
+#define MAZDA_PARAM_TI           8U
 #define MAZDA_TI_FEEDBACK_TIMEOUT_US 40000U  // fail closed after two missed 50 Hz frames
 
-// CRZ_BTNS frames (10 Hz) an engage press stays fresh. Every logged engagement shows the
-// press 30-70 ms before PEDALS.ACC_ACTIVE rises (104-engagement census, zero genuine
-// button-less engagements), so 1 s is generous.
+// Keep SET/RES intent fresh until PEDALS reports engagement.
 #define MAZDA_ENGAGE_BTN_WINDOW 10U
+// A wheel cancel turns MRCC main off for real, and PEDALS trails the press: keep the context
+// on the 50 Hz PEDALS clock for carstate's CANCEL_CONTEXT_T so the main-off edge lands under
+// braking, where a brake-only bit dropout would otherwise be held.
+#define MAZDA_CANCEL_CONTEXT_FRAMES 25U
 
 static bool mazda_longitudinal = false;
+// Declared by the driver: the TJA button owns lateral and MRCC no longer drives the main edge.
+static bool mazda_tja_button = false;
+static bool mazda_steer_to_zero_eps = false;
+static bool mazda_legacy_fw_eps = false;
 static uint32_t mazda_engage_btn_frames = 0U;
+static uint32_t mazda_cancel_context_frames = 0U;
 static bool mazda_ti = false;
 static bool mazda_ti_feedback_healthy = false;
 static uint32_t mazda_ti_feedback_ts = 0U;
@@ -45,30 +63,26 @@ static int mazda_ti_desired_torque_last = 0;
 static int mazda_ti_rt_torque_last = 0;
 static uint32_t mazda_ti_ts_torque_check_last = 0U;
 
-// Radar-mastery latch mirrored from carstate: the software gates cruise availability on the
-// stock radar having been silent for 1 s (STOCK_RADAR_GUARD_T), and MADS keys lateral off
-// acc_main_on's rising edge. Without the same latch here the panda's edge fires at boot
-// (MRCC main persists over ignition), is consumed and exited long before the software
-// engages, and the software's whole MADS window then transmits into rejections -- starving
-// the EPS of 0x243 while the camera's own copy is relay-blocked, which latches the dash
-// LKAS error (routes 00000116/00000117, 2026-08-27). The rx hook never sees the stock
-// CRZ_INFO (it is deliberately not an rx check: it goes stale at the teardown), so the
-// observable stand-in is our own first synthetic CRZ_INFO tx -- the controller starts
-// emitting it the moment the UDS teardown lands, the same moment the stock radar goes
-// quiet, and the software's silence guard runs 1 s from there. PEDALS is the 50 Hz clock.
+// Mirror carstate's radar-ownership guard so panda and MADS arm on the same edge. Start the
+// 50 Hz clock from the first synthetic CRZ_INFO because rx never sees the stock copy.
 #define MAZDA_RADAR_SILENT_FRAMES 50U
 static bool mazda_radar_mastered = false;
 static uint32_t mazda_mastered_pedals_frames = 0U;
 static bool mazda_radar_was_silenced = false;
 
-// With longitudinal control the stock radar is silenced and openpilot replays its frames,
-// so allowed tx patterns are pinned to byte-exact stock captures wherever possible.
+// Pin replaced-radar traffic to captured stock patterns where possible.
 
+// Each radar generation sends its own static capture; the controller picks the dialect (mazdacan.py)
 static bool mazda_radar_static_msg_valid(const CANPacket_t *msg) {
-  return (msg->data[0] == 0x00U) && (msg->data[1] == 0x08U) &&
-         (msg->data[2] == 0xc0U) && (msg->data[3] == 0x00U) &&
-         (msg->data[4] == 0x00U) && (msg->data[5] == 0x00U) &&
-         (msg->data[6] == 0x00U) && (msg->data[7] == 0x00U);
+  bool capture_2022 = (msg->data[0] == 0x00U) && (msg->data[1] == 0x08U) &&
+                      (msg->data[2] == 0xc0U) && (msg->data[3] == 0x00U) &&
+                      (msg->data[4] == 0x00U) && (msg->data[5] == 0x00U) &&
+                      (msg->data[6] == 0x00U) && (msg->data[7] == 0x00U);
+  bool capture_g46l = (msg->data[0] == 0x00U) && (msg->data[1] == 0x98U) &&
+                      (msg->data[2] == 0x40U) && (msg->data[3] == 0x00U) &&
+                      (msg->data[4] == 0x00U) && (msg->data[5] == 0x00U) &&
+                      (msg->data[6] == 0x00U) && (msg->data[7] == 0x00U);
+  return capture_2022 || capture_g46l;
 }
 
 static bool mazda_empty_radar_track_msg_valid(const CANPacket_t *msg) {
@@ -96,18 +110,13 @@ static bool mazda_empty_radar_track_msg_valid(const CANPacket_t *msg) {
             (msg->data[4] == 0xfbU) && (msg->data[5] == 0xffU) &&
             (msg->data[6] == 0x3fU) && ((msg->data[7] & 0xf0U) == 0xc0U);
   } else {
-    // not a radar track address: valid stays false
   }
 
   return valid;
 }
 
 static bool mazda_synthetic_lead_radar_track_msg_valid(const CANPacket_t *msg) {
-  // The controller writes the lead it is following into the occupied-slot capture:
-  // DIST_OBJ fills data[0] and the high nibble of data[1], RELV_OBJ fills data[3] and the
-  // high 3 bits of data[4]. Those fields are free; every bit the template owns must still
-  // match it exactly. A byte-exact check here silently dropped every real-lead frame and
-  // starved the camera of the track (route 6bb2dc61c4: 982 asked, 0 transmitted).
+  // Permit only the distance and relative-velocity fields in the occupied-track template.
   return (msg->addr == MAZDA_RADAR_TRACK_4) &&
          ((msg->data[1] & 0x0fU) == 0x0eU) && (msg->data[2] == 0x00U) &&
          ((msg->data[4] & 0x1fU) == 0x1cU) && (msg->data[5] == 0x00U) &&
@@ -115,10 +124,7 @@ static bool mazda_synthetic_lead_radar_track_msg_valid(const CANPacket_t *msg) {
 }
 
 static bool mazda_radar_track_msg_valid(const CANPacket_t *msg) {
-  // The occupied slot is perception data, not actuation: a stock radar reports its objects
-  // ignition to ignition, engaged or not, and the controller mirrors that. Gating it on
-  // controls_allowed silently killed 0x364 at every disengagement while CRZ_CTRL still said
-  // has_lead=1, the exact track/ctrl disagreement the camera faults on.
+  // Occupied tracks represent perception and remain valid while controls are disengaged.
   return mazda_empty_radar_track_msg_valid(msg) ||
          mazda_synthetic_lead_radar_track_msg_valid(msg);
 }
@@ -134,9 +140,12 @@ static void mazda_ti_reset_torque_state(void) {
   mazda_ti_ts_torque_check_last = microsecond_timer_get();
 }
 
+// fwd-declared: defined below with the camera-LKAS ownership rules
+static bool mazda_openpilot_controlling(void);
+
 static bool mazda_ti_torque_cmd_checks(int desired_torque) {
-  // Rates mirror the stock STEER_TO_ZERO tune (EPS accepts 12/frame); magnitude is capped at the
-  // TI hardware's real ceiling. Non-STZ controllers self-cap lower (6/15/192) under this backstop.
+  // Rates mirror the STZ-EPS tune (EPS accepts 12/frame); magnitude is capped at the TI
+  // hardware's real ceiling. Non-STZ controllers self-cap lower (6/15/192) under this backstop.
   const TorqueSteeringLimits MAZDA_TI_STEERING_LIMITS = {
     // TI DAC output stage self-protects above ~600 (VIOL=0x11, ~30 s latch) — 2026-08-22 drive data
     .max_torque = 600,
@@ -149,7 +158,10 @@ static bool mazda_ti_torque_cmd_checks(int desired_torque) {
   };
 
   bool violation = false;
-  bool controls = controls_allowed || controls_allowed_lateral;
+  // one torque master: the TI may only drive when openpilot owns the LKAS addresses, so a
+  // MADS-pause or TJA-press transient can never overlap a forwarded camera 0x243 with live
+  // TI torque on the AUX bus (upstream's conditional camera forwarding would allow it)
+  bool controls = mazda_openpilot_controlling();
   uint32_t ts = microsecond_timer_get();
   bool feedback_fresh = mazda_ti_feedback_is_fresh();
 
@@ -197,11 +209,6 @@ static bool mazda_get_quality_flag_valid(const CANPacket_t *msg) {
   return integrity;
 }
 
-static bool mazda_fwd_hook(int bus_num, int addr) {
-  return ((bus_num == MAZDA_CAM) && ((addr == (int)MAZDA_LKAS) || (addr == (int)MAZDA_LKAS_HUD) || (addr == (int)MAZDA_TI_LKAS))) ||
-         ((bus_num == MAZDA_MAIN) && (addr == (int)MAZDA_TI_LKAS));
-}
-
 // track msgs coming from OP so that we know what CAM msgs to drop and what to forward
 static void mazda_rx_hook(const CANPacket_t *msg) {
   if ((int)msg->bus == MAZDA_MAIN) {
@@ -221,22 +228,31 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
     if ((msg->addr == MAZDA_CRZ_CTRL) && !mazda_longitudinal) {
       bool cruise_engaged = msg->data[0] & 0x8U;
       pcm_cruise_check(cruise_engaged);
-      acc_main_on = GET_BIT(msg, 17U);
+      // With the TJA button owning lateral, MRCC no longer drives the MADS main edge: its
+      // falling edge would exit the panda's lateral while the software's MADS stays on.
+      if (!mazda_tja_button) {
+        acc_main_on = GET_BIT(msg, 17U);
+      }
+    }
+
+    if ((msg->addr == MAZDA_CRZ_BTNS) && mazda_tja_button) {
+      // The physical TJA button is the MADS lateral switch, so lateral no longer follows MRCC.
+      mads_button_press = GET_BIT(msg, MAZDA_TJA_BUTTON_BIT) ? MADS_BUTTON_PRESSED : MADS_BUTTON_NOT_PRESSED;
     }
 
     if ((msg->addr == MAZDA_CRZ_BTNS) && mazda_longitudinal) {
-      // ensure the driver's cancel press always exits controls
+      // A physical cancel press always exits controls, and explains the main-off that follows.
       bool cancel = GET_BIT(msg, 0U);
       if (cancel) {
         controls_allowed = false;
+        mazda_cancel_context_frames = MAZDA_CANCEL_CONTEXT_FRAMES;
       }
-      // RES, SET_P or SET_M: the driver-intent half of the engagement qualifier below
+      // Record SET/RES intent for the engagement qualifier below.
       if (GET_BIT(msg, 2U) || GET_BIT(msg, 4U) || GET_BIT(msg, 5U)) {
         mazda_engage_btn_frames = MAZDA_ENGAGE_BTN_WINDOW;
       } else if (mazda_engage_btn_frames > 0U) {
         mazda_engage_btn_frames -= 1U;
       } else {
-        // window already expired: nothing to decay
       }
     }
 
@@ -247,30 +263,39 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
     if (msg->addr == MAZDA_PEDALS) {
       bool brake = (msg->data[0] & 0x10U);
       if (mazda_longitudinal) {
-        // PEDALS clocks the silence guard from the mastery point: sticky once set, like
-        // carstate's radar_was_silenced (a returning radar is carstate's accFaulted, not a
-        // MADS exit)
+        // Keep radar ownership latched; returning stock traffic is handled as a fault.
         if (mazda_radar_mastered && (mazda_mastered_pedals_frames < MAZDA_RADAR_SILENT_FRAMES)) {
           mazda_mastered_pedals_frames += 1U;
         }
         mazda_radar_was_silenced = mazda_radar_was_silenced ||
                                    (mazda_mastered_pedals_frames >= MAZDA_RADAR_SILENT_FRAMES);
 
-        // The radar teardown removes the stock CRZ_CTRL frame, so derive cruise state from
-        // PEDALS: ACC_OFF (bit 2) means MRCC is armed but idle, ACC_ACTIVE (bit 3) means
-        // engaged. Brake-only samples can arrive with both bits low mid-press; skip those
-        // so they are not mistaken for an ACC-off edge.
+        // Derive cruise state from PEDALS after radar teardown. Ignore transient brake-only
+        // samples where both cruise bits are low.
         bool cruise_engaged = GET_BIT(msg, 3U);
         bool acc_armed = GET_BIT(msg, 2U) || cruise_engaged;
+        bool brake_free = !brake && !brake_pressed_prev;
 
-        if (acc_armed || cruise_engaged_prev || (!brake && !brake_pressed_prev)) {
-          // gated on the latch so the MADS arming edge lands on the same frame as the
-          // software's cruiseState.available, and both machines arm together
-          acc_main_on = acc_armed && mazda_radar_was_silenced;
-          // Arm only on an engaged rising edge backed by a recent SET/RES press, the
-          // hyundai_common form: ACC_ACTIVE alone is the body answering frames we fabricate.
-          // The tx hooks already drop engaged-claiming frames while controls are not
-          // allowed, so this is defense in depth, not the only gate.
+        // Main mirrors carstate's cruise_available: it follows arming, and a both-low sample is
+        // held under braking unless a wheel cancel explains it. Without the cancel path, main
+        // toggled at a stop with the brake held never falls, the next press has no rising edge,
+        // and MADS runs into 200 rejected frames (route 000001c9--0b2a64a214 seg 0).
+        if (mazda_tja_button) {
+          // the button is the lateral switch; MRCC is cruise only
+        } else if (acc_armed) {
+          // Gate the main edge on radar ownership to align with software availability.
+          acc_main_on = mazda_radar_was_silenced;
+        } else if (brake_free || (mazda_cancel_context_frames > 0U)) {
+          acc_main_on = false;
+        } else {
+        }
+        if (mazda_cancel_context_frames > 0U) {
+          mazda_cancel_context_frames -= 1U;
+        }
+
+        if (acc_armed || cruise_engaged_prev || brake_free) {
+          // Require recent SET/RES intent on the engaged edge; ACC_ACTIVE alone may acknowledge
+          // synthetic traffic rather than a driver request.
           if (cruise_engaged && !cruise_engaged_prev && (mazda_engage_btn_frames > 0U)) {
             controls_allowed = true;
           }
@@ -289,24 +314,58 @@ static void mazda_rx_hook(const CANPacket_t *msg) {
   }
 }
 
+static bool mazda_is_lka_addr(int addr) {
+  return (((unsigned int)addr == MAZDA_LKAS) || ((unsigned int)addr == MAZDA_LKAS_HUD));
+}
+
+// The camera owns the LKAS addresses whenever openpilot is not steering. Lateral is its own
+// axis under MADS (controls_allowed_lateral); with MADS off it follows cruise. Cruise alone must
+// not claim them: under stock long that silenced the camera's own TJA/CTS with MADS off while the
+// dash showed nothing (route 00000018--5655da2c1c seg 15).
+static bool mazda_openpilot_controlling(void) {
+  return controls_allowed_lateral || (controls_allowed && !m_mads_state.system_enabled);
+}
+
+// The one CRZ_BTNS frame openpilot may put on the camera bus: the TJA button pressed over the
+// wheel's idle pattern (00 09 ff Cx 00 00 00 00, Cx = MODE_X_INV, MODE_Y_INV and the counter),
+// no other button. It presses the camera's own TJA/CTS off whenever the camera is armed, so the
+// two lane-centering systems never run at once and the camera never takes the wheel behind a
+// MADS-off press. Accepted in every state: the frame only reaches the camera and can only
+// toggle its lane centering, which the wheel button does anyway; the camera's torque is still
+// vetoed whenever openpilot steers (docs/zoompilot/mazda-lateral.md, "The camera's own TJA/CTS
+// state").
+static bool mazda_cam_tja_press_msg_valid(const CANPacket_t *msg) {
+  return (msg->data[0] == 0x00U) && (msg->data[1] == 0x09U) && (msg->data[2] == 0xffU) &&
+         ((msg->data[3] & 0xc3U) == 0xc0U) && (msg->data[4] == 0x00U) && (msg->data[5] == 0x00U) &&
+         (msg->data[6] == 0x00U) && (msg->data[7] == 0x00U);
+}
+
 static bool mazda_tx_hook(const CANPacket_t *msg) {
-  // Envelope sized for the CX-5 2022+ EPS, which the controller commands up to (max_torque 1200,
-  // driver_torque_multiplier 15 vs upstream stock 800/1). SafetyModel.mazda is per-brand and can't
-  // see the fingerprint/EPS, so these limits apply to every Mazda. Non-CX-5-EPS Mazdas self-cap
-  // lower in the controller (values.py gates the tune on minSteerSpeed == 0), so this is only a
-  // looser backstop for them — not a behavior change. Per-car gating would need a safety param.
+  // Stock pre-2022 EPS envelope.
   const TorqueSteeringLimits MAZDA_STEERING_LIMITS = {
+    .max_torque = 800,
+    .max_rate_up = 10,
+    .max_rate_down = 25,
+    .max_rt_delta = 300,
+    .driver_torque_multiplier = 1,
+    .driver_torque_allowance = 15,
+    .type = TorqueDriverLimited,
+  };
+
+  // The measured EPS envelope, selected by either firmware bit: the EPS's 12-count hardware
+  // slew, with max_rate_down equal to the controller retreat rate so driver-limit winddown
+  // frames remain valid.
+  const TorqueSteeringLimits MAZDA_STEER_TO_ZERO_EPS_STEERING_LIMITS = {
     .max_torque = 1200,
     .max_rate_up = 12,
-    .max_rate_down = 25,
+    .max_rate_down = 12,
     .max_rt_delta = 384,
     .driver_torque_multiplier = 15,
     .driver_torque_allowance = 15,
     .type = TorqueDriverLimited,
   };
 
-  // CRZ_INFO.ACCEL_CMD is raw units of 0.001 m/s2 (offset removed below), so this is the
-  // ISO window: 2.0 / -3.5 m/s2. Stock MRCC itself commands down to raw -3891 in lead stops.
+  // CRZ_INFO.ACCEL_CMD uses 0.001 m/s2 raw units after removing the offset.
   const LongitudinalLimits MAZDA_LONG_LIMITS = {
     .max_accel = 2000,
     .min_accel = -3500,
@@ -317,15 +376,21 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
   bool main_bus = msg->bus == (unsigned char)MAZDA_MAIN;
   bool long_replacement_bus = main_bus || (msg->bus == (unsigned char)MAZDA_CAM);
 
-  // steer cmd checks
   if (main_bus && (msg->addr == MAZDA_LKAS)) {
     int desired_torque = (((msg->data[0] & 0x0FU) << 8) | msg->data[1]) - 2048U;
 
-    if (steer_torque_cmd_checks(desired_torque, -1, MAZDA_STEERING_LIMITS)) {
+    const TorqueSteeringLimits *limits = &MAZDA_STEERING_LIMITS;
+    if (mazda_steer_to_zero_eps || mazda_legacy_fw_eps) {
+      limits = &MAZDA_STEER_TO_ZERO_EPS_STEERING_LIMITS;
+    } else {
+      // upstream's pre-2022 envelope, no longer selected by the interface
+    }
+    if (steer_torque_cmd_checks(desired_torque, -1, *limits)) {
       tx = false;
     }
   }
 
+  // Fork: TI command on the AUX bus. 12-bit torque duplicated in both halves, fixed key.
   if (((int)msg->bus == MAZDA_AUX) && (msg->addr == MAZDA_TI_LKAS)) {
     int desired_torque_raw = ((msg->data[0] & 0x0FU) << 8) | msg->data[1];
     int duplicate_torque_raw = ((msg->data[2] & 0x0FU) << 8) | msg->data[3];
@@ -341,12 +406,13 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     }
   }
 
+  // Run after steering checks, which reset rate-limit state while disengaged.
+  if (main_bus && mazda_is_lka_addr(msg->addr) && !mazda_openpilot_controlling()) {
+    tx = false;
+  }
+
   if (mazda_longitudinal && long_replacement_bus && (msg->addr == MAZDA_CRZ_INFO)) {
-    // the stock patterns for a radar that is not controlling peg the command field high:
-    // main-off standby (data[4]=0xc0, data[5]=0x00) and armed-idle (bit 47 set, and
-    // ACC_SET_ALLOWED mirroring the brake) both carry raw 8190. Allow them byte-exactly
-    // (checksum included) instead of decoding them as a huge accel command; ACC_ACTIVE
-    // (data[4] bit 1) stays required-low here, so no engaged frame can ride this allowance
+    // Allow byte-exact stock standby patterns with the raw 8190 command sentinel.
     bool stock_standby = (msg->data[0] == 0x01U) && (msg->data[1] == 0xffU) &&
                          (msg->data[2] == 0xe3U) && (msg->data[3] == 0xffU) &&
                          ((msg->data[4] & 0xfbU) == 0xc0U) &&
@@ -355,18 +421,14 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
                          (msg->data[7] == ((0xffU - ((msg->data[0] + msg->data[1] + msg->data[2] + msg->data[3] +
                                                      msg->data[4] + msg->data[5] + msg->data[6]) & 0xffU)) & 0xffU));
 
-    // 13-bit ACCEL_CMD: data[2] low bits, data[3], data[4] high bits, offset 4096.
-    // Assembled unsigned so every shift operand is an essential unsigned type (MISRA 10.1).
+    // Assemble the 13-bit ACCEL_CMD unsigned for MISRA 10.1, then remove its 4096 offset.
     uint32_t accel_raw = (((uint32_t)msg->data[2] & 0x3U) << 11) | ((uint32_t)msg->data[3] << 3) | ((uint32_t)msg->data[4] >> 5);
     int desired_accel = (int)accel_raw - 4096;
     if (!stock_standby && longitudinal_accel_checks(desired_accel, MAZDA_LONG_LIMITS)) {
       tx = false;
     }
 
-    // ACC_ACTIVE (bit 33) mirrors CRZ_CTRL's CRZ_ACTIVE gate: an engaged-claiming accel
-    // frame must not flow while controls are not allowed. No deadlock: the body raises
-    // PEDALS.ACC_ACTIVE off the SET press 10-20 ms before the first ACC_ACTIVE=1 frame
-    // in every logged engagement, so controls_allowed leads this bit, not the reverse.
+    // ACC_ACTIVE requires prior controls permission established from the physical SET edge.
     bool acc_active = GET_BIT(msg, 33U);
     if (!controls_allowed && acc_active) {
       tx = false;
@@ -393,7 +455,7 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
   }
 
   if (mazda_longitudinal && main_bus && (msg->addr == MAZDA_RADAR_UDS)) {
-    // only tester present and default/programming session control; flashing services stay blocked
+    // Allow tester-present and default/programming session control only.
     bool tester_present = (msg->data[0] == 0x02U) && (msg->data[1] == 0x3eU) && (msg->data[2] == 0x80U);
     bool session_control = (msg->data[0] == 0x02U) && (msg->data[1] == 0x10U) &&
                            ((msg->data[2] == 0x01U) || (msg->data[2] == 0x02U));
@@ -402,18 +464,27 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     }
   }
 
-  // cruise buttons check
   if (main_bus && (msg->addr == MAZDA_CRZ_BTNS)) {
-    // allow resume spamming while controls allowed, but
-    // only allow cancel while controls not allowed
+    // Permit resume only while controlling and cancel only while not controlling.
     bool cancel_cmd = (msg->data[0] == 0x1U);
     if (!controls_allowed && !cancel_cmd) {
       tx = false;
     }
+    // The TJA button is never pressed on the car's side: it would toggle MADS through the
+    // rx hook and arm MRCC in the body.
+    if (GET_BIT(msg, MAZDA_TJA_BUTTON_BIT)) {
+      tx = false;
+    }
   }
 
-  // radar mastery: our first synthetic CRZ_INFO on the main bus marks the teardown landing,
-  // the same moment the stock radar goes quiet
+  if ((msg->bus == (unsigned char)MAZDA_CAM) && (msg->addr == MAZDA_CRZ_BTNS)) {
+    // The camera-side press exists only to switch the camera's TJA/CTS off: byte-exact, any state.
+    if (!mazda_cam_tja_press_msg_valid(msg)) {
+      tx = false;
+    }
+  }
+
+  // The first synthetic CRZ_INFO marks the radar ownership transition.
   if (tx && main_bus && (msg->addr == MAZDA_CRZ_INFO) && mazda_longitudinal) {
     mazda_radar_mastered = true;
   }
@@ -421,36 +492,48 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
   return tx;
 }
 
+static bool mazda_fwd_hook(int bus_num, int addr) {
+  bool block_msg = false;
+
+  if (bus_num == MAZDA_CAM) {
+    if (mazda_is_lka_addr(addr)) {
+      block_msg = mazda_openpilot_controlling();
+    }
+  }
+
+  return block_msg;
+}
+
 static safety_config mazda_init(uint16_t param) {
   mazda_engage_btn_frames = 0U;
+  mazda_cancel_context_frames = 0U;
   mazda_radar_mastered = false;
   mazda_mastered_pedals_frames = 0U;
   mazda_radar_was_silenced = false;
 
   static const CanMsg MAZDA_TX_MSGS[] = {
-    {MAZDA_LKAS, 0, 8, .check_relay = true},
+    {MAZDA_LKAS, 0, 8, .check_relay = true, .disable_static_blocking = true},
     {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false},
-    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true},
+    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true, .disable_static_blocking = true},
+    // The camera press: no relay check, so the wheel's own 0x09d keeps forwarding to the camera.
+    {MAZDA_CRZ_BTNS, MAZDA_CAM, 8, .check_relay = false},
   };
 
-  // The replaced-radar addresses stay check_relay = false on purpose: that mechanism is for
-  // harness-blocked ECUs that are silent from ignition on, and any RX after 1 s latches a
-  // permanent relay_malfunction. This radar is software-silenced mid-session -- alive for the
-  // first ~10 s by design, and deliberately overlapped during the ordered hand-back -- so the
-  // relay check would fault every boot. The two-master guard lives in carstate instead
-  // (accFaulted on radar-came-back) plus the session manager's bounded re-silence.
-
   static const CanMsg MAZDA_TI_TX_MSGS[] = {
-    {MAZDA_LKAS, 0, 8, .check_relay = true},
+    {MAZDA_LKAS, 0, 8, .check_relay = true, .disable_static_blocking = true},
     {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false},
-    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true},
+    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true, .disable_static_blocking = true},
+    {MAZDA_CRZ_BTNS, MAZDA_CAM, 8, .check_relay = false},
     {MAZDA_TI_LKAS, MAZDA_AUX, 8, .check_relay = false},
   };
 
+// Replaced-radar addresses omit relay checks because the radar remains live during boot and
+// hand-back. carstate enforces single ownership instead.
   static const CanMsg MAZDA_LONG_TX_MSGS[] = {
-    {MAZDA_LKAS, 0, 8, .check_relay = true},
+    {MAZDA_LKAS, 0, 8, .check_relay = true, .disable_static_blocking = true},
     {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false},
-    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true},
+    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true, .disable_static_blocking = true},
+    {MAZDA_CRZ_BTNS, MAZDA_CAM, 8, .check_relay = false},
     {MAZDA_CRZ_INFO, 0, 8, .check_relay = false},
     {MAZDA_CRZ_CTRL, 0, 8, .check_relay = false},
     {MAZDA_RADAR_STATIC, 0, 8, .check_relay = false},
@@ -473,9 +556,10 @@ static safety_config mazda_init(uint16_t param) {
   };
 
   static const CanMsg MAZDA_LONG_TI_TX_MSGS[] = {
-    {MAZDA_LKAS, 0, 8, .check_relay = true},
+    {MAZDA_LKAS, 0, 8, .check_relay = true, .disable_static_blocking = true},
     {MAZDA_CRZ_BTNS, 0, 8, .check_relay = false},
-    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true},
+    {MAZDA_LKAS_HUD, 0, 8, .check_relay = true, .disable_static_blocking = true},
+    {MAZDA_CRZ_BTNS, MAZDA_CAM, 8, .check_relay = false},
     {MAZDA_TI_LKAS, MAZDA_AUX, 8, .check_relay = false},
     {MAZDA_CRZ_INFO, 0, 8, .check_relay = false},
     {MAZDA_CRZ_CTRL, 0, 8, .check_relay = false},
@@ -499,6 +583,9 @@ static safety_config mazda_init(uint16_t param) {
   };
 
   mazda_longitudinal = GET_FLAG(param, MAZDA_PARAM_LONGITUDINAL);
+  mazda_steer_to_zero_eps = GET_FLAG(param, MAZDA_PARAM_STEER_TO_ZERO_EPS);
+  mazda_legacy_fw_eps = GET_FLAG(param, MAZDA_PARAM_LEGACY_FW_EPS);
+  mazda_tja_button = GET_FLAG(current_safety_param_sp, MAZDA_PARAM_SP_TJA_BUTTON);
   mazda_ti = GET_FLAG(param, MAZDA_PARAM_TI);
   mazda_ti_feedback_healthy = false;
   mazda_ti_feedback_ts = 0U;
@@ -507,38 +594,40 @@ static safety_config mazda_init(uint16_t param) {
 
   safety_config ret;
   if (mazda_longitudinal) {
-    // no CRZ_CTRL check: the stock radar frame disappears after the teardown
-    static RxCheck mazda_long_rx_checks[] = {
-      {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-    };
-    static RxCheck mazda_long_ti_rx_checks[] = {
-      {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_TI_FEEDBACK,  MAZDA_AUX, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = false}, { 0 }, { 0 }}},
-    };
+    // CRZ_CTRL intentionally disappears after radar teardown.
+  static RxCheck mazda_long_rx_checks[] = {
+    {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+  };
+
+  static RxCheck mazda_long_ti_rx_checks[] = {
+    {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_TI_FEEDBACK,  MAZDA_AUX, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = false}, { 0 }, { 0 }}},
+  };
     ret = mazda_ti ? BUILD_SAFETY_CFG(mazda_long_ti_rx_checks, MAZDA_LONG_TI_TX_MSGS) :
                      BUILD_SAFETY_CFG(mazda_long_rx_checks, MAZDA_LONG_TX_MSGS);
   } else {
-    static RxCheck mazda_rx_checks[] = {
-      {.msg = {{MAZDA_CRZ_CTRL,     0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-    };
-    static RxCheck mazda_ti_rx_checks[] = {
-      {.msg = {{MAZDA_CRZ_CTRL,     0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
-      {.msg = {{MAZDA_TI_FEEDBACK,  MAZDA_AUX, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = false}, { 0 }, { 0 }}},
-    };
+  static RxCheck mazda_rx_checks[] = {
+    {.msg = {{MAZDA_CRZ_CTRL,     0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+  };
+
+  static RxCheck mazda_ti_rx_checks[] = {
+    {.msg = {{MAZDA_CRZ_CTRL,     0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_CRZ_BTNS,     0, 8, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_STEER_TORQUE, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_ENGINE_DATA,  0, 8, 100U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_PEDALS,       0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},
+    {.msg = {{MAZDA_TI_FEEDBACK,  MAZDA_AUX, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = false}, { 0 }, { 0 }}},
+  };
     ret = mazda_ti ? BUILD_SAFETY_CFG(mazda_ti_rx_checks, MAZDA_TI_TX_MSGS) :
                      BUILD_SAFETY_CFG(mazda_rx_checks, MAZDA_TX_MSGS);
   }

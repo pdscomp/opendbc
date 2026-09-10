@@ -8,18 +8,19 @@ import functools
 import json
 import os
 import numpy as np
-from typing import Any, NamedTuple
+from typing import NamedTuple
 from collections.abc import Callable
 
 from opendbc.car import structs
 from opendbc.car.can_definitions import CanRecvCallable, CanSendCallable
 from opendbc.car.hyundai.values import HyundaiFlags
-from opendbc.car.mazda.values import CAR, MazdaFlags, MazdaSafetyFlags
 from opendbc.car.subaru.values import SubaruFlags
 from opendbc.car.toyota.values import ToyotaSafetyFlags
 from opendbc.sunnypilot.car.hyundai.enable_radar_tracks import enable_radar_tracks as hyundai_enable_radar_tracks
 from opendbc.sunnypilot.car.hyundai.longitudinal.helpers import LongitudinalTuningType
 from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
+from opendbc.car.mazda.values import CAR, MazdaFlags, MazdaSafetyFlags
+from opendbc.sunnypilot.car.mazda.values import MazdaFlagsSP, MazdaSafetyFlagsSP
 from opendbc.sunnypilot.car.subaru.values_ext import SubaruFlagsSP, SubaruSafetyFlagsSP
 from opendbc.sunnypilot.car.tesla.values import MadsScreenButtonType, TeslaFlagsSP, TeslaSafetyFlagsSP
 from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP
@@ -88,15 +89,43 @@ def get_steer_rail_schedule(CP):
   return bp, rail
 
 
+def get_steer_slew_schedule(CP):
+  """Per-frame normalized torque slew the carcontroller allows, by speed:
+  (speed_bp, up, down) with up = STEER_DELTA_UP / STEER_MAX(v) and down = STEER_DELTA_DOWN /
+  STEER_MAX(v), on STEER_MAX_LOOKUP's breakpoints when the scale is speed-dependent and on a
+  single breakpoint otherwise. Lets controlsd's steer-limit classifier tell a command the
+  actuator is still walking toward (one slew step behind) from one the driver envelope or
+  the EPS rail is holding back. None when the brand's CarControllerParams lacks the
+  attributes or cannot be built from CP (the consumer keeps upstream's flag as is)."""
+  try:
+    values = __import__(f'opendbc.car.{CP.brand}.values', fromlist=['CarControllerParams'])
+    ccp = values.CarControllerParams(CP)
+  except (ImportError, AttributeError, TypeError):
+    return None
+  delta_up = getattr(ccp, 'STEER_DELTA_UP', None)
+  delta_down = getattr(ccp, 'STEER_DELTA_DOWN', None)
+  if delta_up is None or delta_down is None:
+    return None
+  lookup = getattr(ccp, 'STEER_MAX_LOOKUP', None)
+  if lookup is not None:
+    bp, sm_v = [float(x) for x in lookup[0]], [float(x) for x in lookup[1]]
+  else:
+    steer_max = getattr(ccp, 'STEER_MAX', None)
+    if steer_max is None:
+      return None
+    bp, sm_v = [0.0], [float(steer_max)]
+  return bp, [float(delta_up) / sm for sm in sm_v], [float(delta_down) / sm for sm in sm_v]
+
+
 def get_speed_dep_config_for_car(CP):
   """The speed-dep entry for this car, honoring the entry's validity predicate.
 
   An entry measured on a zero-min-steer-speed EPS (e.g. an EPS-swapped car) declares
   requires_steer_to_zero: its LAF values were learned under that EPS's STEER_MAX
   schedule, and the same model with its stock EPS runs a different schedule, so the
-  seeds would be mis-scaled there. minSteerSpeed == 0 is a cheap CP-level signature of
-  that EPS; the carcontroller keys the schedule on MazdaFlags.STEER_TO_ZERO itself
-  (TI also zeroes minSteerSpeed, so the flag is the only exact identity).
+  seeds would be mis-scaled there. minSteerSpeed == 0 is the brand-neutral statement
+  that the EPS steers to a stop, which is what the entry requires. An entry that stays
+  active for a car with a floor loses the bins centered below it.
 
   An active entry carries the platform's STEER_MAX schedule under 'steer_max_schedule'
   when one exists: bin LAF values are normalized units learned under one scale each,
@@ -106,6 +135,16 @@ def get_speed_dep_config_for_car(CP):
   if cfg.get('requires_steer_to_zero') and CP.minSteerSpeed > 0:
     return {}
   cfg = dict(cfg)
+  if cfg and CP.minSteerSpeed > 0 and 'speed_bp' in cfg:
+    # A car never steers below its floor, so bins centered there hold seeds it can neither use
+    # nor learn against; a legacy-firmware Mazda keeps only the bins learned at its road-speed scale.
+    keep = [i for i, v in enumerate(cfg['speed_bp']) if v >= CP.minSteerSpeed]
+    for key in ('speed_bp', 'laf_bp', 'friction_bp'):
+      if key in cfg:
+        if keep:
+          cfg[key] = [cfg[key][i] for i in keep]
+        else:
+          del cfg[key]
   if cfg:
     schedule = get_steer_max_schedule(CP)
     if schedule is not None:
@@ -156,37 +195,20 @@ class NanoFFModel:
 
 
 def setup_interfaces(CI, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
-                     params_list: list[dict[str, Any]] | None = None,
+                     params_list: list[dict[str, str]] | None = None,
                      can_recv: CanRecvCallable | None = None, can_send: CanSendCallable | None = None) -> None:
   if params_list is None:
     params_list = []
 
   params_dict = {k: v for param in params_list for k, v in param.items()}
 
-  _initialize_mazda(CP, params_dict)
   _initialize_custom_longitudinal_tuning(CI, CP, CP_SP, params_dict)
   _initialize_coop_steering(CP, CP_SP, params_dict)
   _initialize_tesla_mads_screen_button(CP, CP_SP, params_dict)
   _initialize_radar_tracks(CP, CP_SP, can_recv, can_send)
   _initialize_stop_and_go(CP, CP_SP, params_dict)
   _initialize_toyota(CP, CP_SP, params_dict)
-
-
-def _initialize_mazda(CP: structs.CarParams, params_dict: dict[str, Any]) -> None:
-  # The CX-8 platform definition itself assumes the interceptor (TI tuning params live in
-  # values.py) and is dashcamOnly without it, so treat TI as intrinsic there: a wiped or
-  # lost TorqueInterceptorEnabled param must not drop the car into dashcam mode.
-  ti_enabled = bool(params_dict.get("TorqueInterceptorEnabled", False)) or CP.carFingerprint == CAR.MAZDA_CX8_2022
-  if CP.brand != 'mazda' or not ti_enabled:
-    return
-  if not CP.flags & MazdaFlags.GEN1:
-    raise ValueError("Torque Interceptor requires Mazda GEN1")
-
-  CP.flags |= MazdaFlags.TORQUE_INTERCEPTOR.value
-  CP.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
-  CP.dashcamOnly = False
-  CP.minSteerSpeed = 0
-  CP.steerAtStandstill = True
+  _initialize_mazda(CP, CP_SP, params_dict)
 
 
 def _initialize_custom_longitudinal_tuning(CI, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
@@ -263,3 +285,25 @@ def _initialize_toyota(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params
 
     if toyota_stop_and_go_hack and CP.openpilotLongitudinalControl:
       CP_SP.flags |= ToyotaFlagsSP.STOP_AND_GO_HACK.value
+
+
+def _initialize_mazda(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params_dict: dict[str, str]) -> None:
+  if CP.brand == 'mazda':
+    # The CX-8 platform definition itself assumes the interceptor (TI tuning params live in
+    # values.py) and is dashcamOnly without it, so treat TI as intrinsic there: a wiped or
+    # lost TorqueInterceptorEnabled param must not drop the car into dashcam mode.
+    ti_enabled = int(params_dict.get("TorqueInterceptorEnabled", 0)) == 1 or CP.carFingerprint == CAR.MAZDA_CX8_2022
+    if ti_enabled:
+      if not CP.flags & MazdaFlags.GEN1:
+        raise ValueError("Torque Interceptor requires Mazda GEN1")
+      CP.flags |= MazdaFlags.TORQUE_INTERCEPTOR.value
+      CP.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.TORQUE_INTERCEPTOR.value
+      CP.dashcamOnly = False
+      CP.minSteerSpeed = 0
+      CP.steerAtStandstill = True
+
+    # The TJA button is fitted to some trims only and the fingerprint cannot tell, so the
+    # driver declares it. With it, the button owns lateral and MRCC only controls cruise.
+    if int(params_dict.get("MazdaTjaButton", 0)) == 1:
+      CP_SP.flags |= MazdaFlagsSP.TJA_BUTTON.value
+      CP_SP.safetyParam |= MazdaSafetyFlagsSP.TJA_BUTTON

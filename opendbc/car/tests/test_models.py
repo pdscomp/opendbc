@@ -319,7 +319,10 @@ class TestCarModelBase(unittest.TestCase):
         msgs_sent += len(sendcan)
         for addr, dat, bus in sendcan:
           packet = libsafety_py.make_CANPacket(addr, bus % 4, dat)
-          self.assertTrue(self.safety.safety_tx_hook(packet), (addr, dat, bus))
+          # one sender per address: the safety model may reject our frame only while it forwards
+          # the stock copy of this addr onto the same bus instead (a camera kept live while disengaged)
+          stock_forwarded = any(self.safety.safety_fwd_hook(b, addr) == bus % 4 for b in range(3))
+          self.assertTrue(self.safety.safety_tx_hook(packet) or stock_forwarded, (addr, dat, bus))
       self.assertGreater(msgs_sent, 50)
 
     test_car_controller(structs.CarControl().as_reader())

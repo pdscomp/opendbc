@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 from opendbc.car import Bus, get_safety_config, structs
+from opendbc.car.carlog import carlog
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.mazda.carcontroller import CarController
 from opendbc.car.mazda.carstate import CarState
 from opendbc.car.mazda.radar_interface import RadarInterface
-from opendbc.car.mazda.values import CAR, DBC, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, MazdaFlags, MazdaSafetyFlags
+from opendbc.car.mazda.values import CAR, DBC, G46L_RADAR_FW, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, MazdaFlags, MazdaSafetyFlags, platform_from_vin
 
 
 class CarInterface(CarInterfaceBase):
@@ -18,44 +19,58 @@ class CarInterface(CarInterfaceBase):
     ret.brand = "mazda"
     ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.mazda)]
 
-    ret.radarUnavailable = Bus.radar not in DBC[candidate]
+    # The G46L is the one radar known never to publish 0x361-0x366 on bus 0: parsing its
+    # claimed bus would starve radarTracks behind a parser that never goes valid, so it runs
+    # vision-only. Any other radar keeps the platform's word — an unlisted newer revision of
+    # a working radar must not silently lose its tracks.
+    g46l_radar = any(fw.ecu == 'fwdRadar' and fw.fwVersion.rstrip(b'\x00') in G46L_RADAR_FW for fw in car_fw)
+    if g46l_radar:
+      ret.flags |= MazdaFlags.G46L_RADAR.value
+    ret.radarUnavailable = Bus.radar not in DBC[candidate] or g46l_radar
 
-    # 2022+ CX-5 EPS can steer to zero and has no hands-off lockout. Detected by EPS firmware
-    # rather than by model, so an EPS swapped into an older Mazda is recognized as what it is.
-    steer_to_zero = candidate == CAR.MAZDA_CX5_2022 or \
-      any(fw.ecu == 'eps' and fw.fwVersion in STEER_TO_ZERO_EPS_FW for fw in car_fw)
+    # Every gen1 Mazda EPS is the same hardware; only the firmware differs. Steer-to-zero follows
+    # the EPS firmware, so a donor-EPS swap carries it and older firmware in a 2022 body loses it.
+    # Only an unread EPS (docs, a failed query) falls back to the platform: a forced CX-5 2022
+    # fingerprint on an unlisted older EPS then gets the floor and its banner, not a silent latch.
+    eps_fw = {fw.fwVersion for fw in car_fw if fw.ecu == 'eps'}
+    steer_to_zero = bool(eps_fw & STEER_TO_ZERO_EPS_FW) or (not eps_fw and candidate == CAR.MAZDA_CX5_2022)
     if steer_to_zero:
-      ret.flags |= MazdaFlags.STEER_TO_ZERO.value
+      # Select panda's matching torque envelope from the detected EPS.
+      ret.flags |= MazdaFlags.STEER_TO_ZERO_EPS.value
+      ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.STEER_TO_ZERO_EPS.value
     else:
+      # Same envelope and tune; only the firmware's floor, latch semantics and alpha long differ.
       ret.minSteerSpeed = LKAS_LIMITS.DISABLE_SPEED * CV.KPH_TO_MS
+      ret.flags |= MazdaFlags.LEGACY_FW_EPS.value
+      ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.LEGACY_FW_EPS.value
 
-    # CX-9 2021 verified against route 00000004--97e4328f4f: same message set at the same
-    # rates, CRZ_INFO checksum holds on all 54k stock frames, radar UDS at 0x764, and the
-    # same FSC camera firmware (GSH7-67XK2-U) as the CX-5 2022 this was developed on.
-    # An EPS-swapped pre-2022 Mazda presents the same steer-to-zero EPS as a 2022+ car;
-    # the radar and camera keep their own firmware, but they share the same 0x764/0x706
-    # addresses and CRZ_INFO/CAM frame layouts, so the same longitudinal path applies.
-    ret.alphaLongitudinalAvailable = candidate in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) or steer_to_zero
+    # Alpha-long silences the radar and stands in for it, so it needs the radar's dialect,
+    # not its tracks: offer it wherever the platform's radar speaks the 2022 family dialect
+    # (its DBC claims a radar bus) or the detected radar is the G46L whose own replay exists.
+    # The EPS gate stays: a stock older EPS cuts lateral below 45 kph, so stop-and-go would
+    # run unsteered.
+    ret.alphaLongitudinalAvailable = steer_to_zero and (Bus.radar in DBC[candidate] or g46l_radar)
     ret.openpilotLongitudinalControl = alpha_long and ret.alphaLongitudinalAvailable
     if ret.openpilotLongitudinalControl:
       ret.safetyConfigs[0].safetyParam |= MazdaSafetyFlags.LONG.value
-      # engagement stays with the car: the driver SETs on the wheel, the body ECU raises
-      # PEDALS.ACC_ACTIVE, and the dash-owned CRZ_EVENTS setpoint survives the radar teardown
+      # The car owns engagement and preserves its setpoint through radar teardown.
       ret.pcmCruise = True
       ret.radarUnavailable = True
-      ret.stopAccel = -1.024  # stock MRCC holds raw -1024 at a stop; the plan parks here and we send it as-is
+      ret.stopAccel = -1.024  # stock MRCC standstill command
       ret.longitudinalActuatorDelay = 0.36  # measured ~0.3 s dead time + ~0.3 s first-order lag
 
-    # Older Mazdas are dashcam only for one reason: their EPS locks steering out after ~5 s of
-    # hands-off and below 45 kph. That is a property of the EPS, not of the car, so a car with
-    # the 2022+ EPS swapped in is controllable and lifts with it.
-    ret.dashcamOnly = candidate not in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) and not steer_to_zero
+    # Older EPS firmware enforces hands-off and low-speed steering lockouts.
+    # Docs mode carries no real EPS firmware, so leave dashcamOnly at the default.
+    if not docs:
+      ret.dashcamOnly = candidate not in (CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9_2021) and not steer_to_zero
+
+    carlog.debug({"event": "mazdaRadarVerdict", "radarUnavailable": ret.radarUnavailable,
+                  "platformClaim": Bus.radar in DBC[candidate], "g46lRadar": g46l_radar, "steerToZeroEps": steer_to_zero})
 
     ret.enableBsm = 0x477 in fingerprint[0]
 
-    # command-to-torque lag is EPS firmware, so it follows the EPS. lagd learns the rest
-    # (0.338 total on a CX-5 2022; initial = this + 0.2)
-    ret.steerActuatorDelay = 0.14 if steer_to_zero else 0.1
+    # Command-to-torque lag measured on the EPS hardware; lagd learns the remaining delay.
+    ret.steerActuatorDelay = 0.14
     ret.steerLimitTimer = 0.8
 
     CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
@@ -68,5 +83,12 @@ class CarInterface(CarInterfaceBase):
   def _get_params_sp(stock_cp: structs.CarParams, ret: structs.CarParamsSP, candidate, fingerprint: dict[int, dict[int, int]],
                      car_fw: list[structs.CarParams.CarFw], alpha_long: bool, is_release_sp: bool, docs: bool) -> structs.CarParamsSP:
     ret.intelligentCruiseButtonManagementAvailable = True
+
+    # A carried-forward CarPlatformBundle can disagree with the physical car after a
+    # hardware swap or a branch switch without reinstall.
+    vin_platform = platform_from_vin(stock_cp.carVin)
+    if vin_platform is not None and vin_platform != str(candidate):
+      carlog.warning({"event": "platformBundleVinMismatch", "bundle": str(candidate), "vin_platform": vin_platform,
+                      "hint": "the selected platform bundle does not match the VIN's platform"})
 
     return ret

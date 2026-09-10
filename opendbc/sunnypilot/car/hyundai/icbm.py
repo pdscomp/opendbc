@@ -10,6 +10,7 @@ from opendbc.car import DT_CTRL, structs
 from opendbc.car.can_definitions import CanData
 from opendbc.car.hyundai import hyundaican, hyundaicanfd
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CANFD_CAR
+from opendbc.sunnypilot.car.icbm_actuation_profile import tap_equivalent
 from opendbc.sunnypilot.car.intelligent_cruise_button_management_interface_base import IntelligentCruiseButtonManagementInterfaceBase
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -68,7 +69,7 @@ class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManageme
     self.last_button_frame = last_button_frame
 
     if self.ICBM.sendButton != SendButtonState.none:
-      send_button = BUTTONS[self.ICBM.sendButton]
+      send_button = BUTTONS[tap_equivalent(self.ICBM.sendButton)]
 
       if self.CP.carFingerprint in CANFD_CAR:
         can_sends.extend(self.create_canfd_mock_button_messages(packer, CS, CAN, send_button))

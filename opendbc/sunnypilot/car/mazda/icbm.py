@@ -23,16 +23,10 @@ BUTTONS = {
 }
 HOLD_BUTTONS = (SendButtonState.increaseHold, SendButtonState.decreaseHold)
 
-# The body ECU registers at most ~1 discrete press per 200 ms; a tighter cadence makes it
-# drop presses (measured ~0.93 mph/press at 5 Hz vs ~0.47 at 9 Hz, so faster sending gives
-# a slower dash). Hold frames go out at the CRZ_BTNS native rate: measured 10 Hz on the
-# wire (99-101 ms for ~95% of 7.2k inter-frame gaps, route 0b), with extra event frames
-# only on press edges — and the wheel's CTR increments +1 on EVERY frame including those,
-# never repeating a value. A genuinely held button just keeps its bit set on the regular
-# 10 Hz cadence, so pacing our forged frames at that rate both mimics a real hold exactly
-# and guarantees the +1 counter offset below is unique (a fresh genuine counter lands
-# between consecutive sends). The servo watches the dash and falls back to discrete taps
-# if the long-press step never lands.
+# The body ECU registers at most ~1 discrete press per 200 ms and drops presses sent faster.
+# Hold frames go out at CRZ_BTNS's native 10 Hz, which is what a real held button looks like
+# and guarantees the +1 counter offset is unique (the wheel's CTR advances every frame).
+# See docs/zoompilot/mazda-longitudinal.md, "Cruise button management".
 HOLD_PERIOD = 0.1  # s between hold frames (CRZ_BTNS native 10 Hz)
 
 
@@ -48,10 +42,9 @@ class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManageme
     self.frame = frame
     self.last_button_frame = last_button_frame
 
-    # Same-frame suppression while the driver holds SET+/SET-: the selfdrived readiness gate
-    # also pauses ICBM on driver presses, but only after a few frames of messaging latency,
-    # during which a forged frame (with the driver's button bit at 0) could interleave with
-    # the wheel's own frames and make the body ECU drop or miscount the press.
+    # same-frame suppression while the driver holds SET+/SET-: the selfdrived readiness gate
+    # pauses ICBM too, but a few frames late, and a forged frame with the driver's bit at 0
+    # would make the body ECU drop or miscount the press
     if CS.accel_button or CS.decel_button:
       return can_sends
 
@@ -60,9 +53,7 @@ class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManageme
       since_last_send = (self.frame - self.last_button_frame) * DT_CTRL
 
       if self.ICBM.sendButton in HOLD_BUTTONS:
-        # Sustained hold: one frame per native 10 Hz message slot. The genuine counter
-        # advances between consecutive sends at this cadence, so a fixed +1 offset stays
-        # unique (see HOLD_PERIOD above for the measured wire behavior).
+        # sustained hold: one frame per native 10 Hz slot, so the fixed +1 offset stays unique
         if since_last_send > HOLD_PERIOD:
           can_sends.append(mazdacan.create_button_cmd(packer, self.CP, CS.crz_btns_counter + 1, send_button))
           self.last_button_frame = self.frame

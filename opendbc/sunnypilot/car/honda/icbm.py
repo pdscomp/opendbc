@@ -9,6 +9,7 @@ from opendbc.car import structs, DT_CTRL
 from opendbc.car.can_definitions import CanData
 from opendbc.car.honda import hondacan
 from opendbc.car.honda.values import CruiseButtons
+from opendbc.sunnypilot.car.icbm_actuation_profile import tap_equivalent
 from opendbc.sunnypilot.car.intelligent_cruise_button_management_interface_base import IntelligentCruiseButtonManagementInterfaceBase
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -32,7 +33,7 @@ class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManageme
     self.last_button_frame = last_button_frame
 
     if self.ICBM.sendButton != SendButtonState.none:
-      send_button = BUTTONS[self.ICBM.sendButton]
+      send_button = BUTTONS[tap_equivalent(self.ICBM.sendButton)]
 
       if (self.frame - self.last_button_frame) * DT_CTRL > 0.05:
         can_sends.append(hondacan.spam_buttons_command(packer, CAN, send_button, self.CP))

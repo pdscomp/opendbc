@@ -1,52 +1,35 @@
-# Speed-dependent torque parameters — per-car speed-binned config.
-#
-# Each entry maps a car fingerprint to:
-#   speed_bp    — speed breakpoints in m/s (bin centers)
-#   laf_bp      — latAccelFactor at each speed
-#   friction_bp — friction coefficient at each speed
-#
-# The online learner (torque estimator) runs independent SVD fits per speed bin.
-# laf_bp/friction_bp provide starting values and define +/-30% sanity bounds.
-#
-# Values from comma 4 device-learned data.
+# Per-platform speed-binned torque parameters learned from comma 4 data. Breakpoints are
+# bin centers in m/s. LAF and friction seed per-bin SVD fits and their +/-30% sanity bounds.
+# Learned bins persist across boots. Increment seed_version when new seeds must invalidate
+# existing caches and restart learning; an omitted version is zero.
 
 [MAZDA_CX5_2022]
-# STEER_MAX cliff 1200→800 at 32 mph. Bin boundary at 14.2 m/s aligns with cliff,
-# so each bin learns under a single scale: bins 0-2 SM=1200, bins 3-6 SM=800.
-# LAF values are normalized units under their bin's scale; consumers interpolate
-# across the cliff in per-count space via the entry's steer_max_schedule (attached
-# by get_speed_dep_config_for_car) -- a direct interp of these values smears the
-# scale step across the 12.0-16.4 span (~+18% torque below the cliff, ~-19% above).
-# Refreshed 2026-08-19 straight from the comma 4's LiveTorqueParameters cache
-# (per-bin SVD fits, all learned on the current bin layout so laf needs no
-# STEER_MAX rescaling). First refresh with all 7 bins valid: the 28.0 and 35.0
-# highway bins are learned now, no longer carrying 08-03 seed values. Bin 1's
-# LAF (2.53 -> 2.93) had drifted toward the old +30% sanity edge; this refresh
-# re-centers the bounds on it.
+# The 14.2 m/s boundary aligns bins with the STEER_MAX change from 1200 to 800.
+# Consumers interpolate normalized LAF in count space across that discontinuity.
+# Values were refreshed from per-bin LiveTorqueParameters fits on 2026-09-02. Unlearned
+# 28 m/s and 35 m/s bins retain the 2026-08-19 fits. Version 1 invalidates older caches.
 speed_bp    = [6.5, 9.5, 12.0, 16.4, 21.0, 28.0, 35.0]
-laf_bp      = [2.43, 2.93, 2.37, 1.21, 1.16, 1.53, 1.76]
-friction_bp = [0.156, 0.142, 0.124, 0.153, 0.139, 0.122, 0.108]
+laf_bp      = [2.42, 2.86, 2.29, 1.21, 1.22, 1.53, 1.76]
+friction_bp = [0.160, 0.143, 0.124, 0.145, 0.133, 0.122, 0.108]
+seed_version = 1
 
 [MAZDA_CX9_2021]
-# Measured on an EPS-SWAPPED CX-9 2021 running the CX-5 2022 donor EPS
-# (KSD5/KBST firmware, STEER_TO_ZERO_EPS_FW), under that EPS's STEER_MAX
-# schedule (1200 below the 14.2 m/s cliff, 800 above) and cliff-aligned bin
-# layout. The stock CX-9 2021 EPS (TC3M) keeps a 45 kph floor and a flat 800,
-# so these LAF values would be mis-scaled there — requires_steer_to_zero
-# suppresses the entry unless the swap is fingerprinted (minSteerSpeed == 0).
-requires_steer_to_zero = true
-# Refreshed 2026-08-25 from this car's own LiveTorqueParameters cache, read off
-# route 00000012--eba222b1f2 (2026-08-23). Bins 6.5-16.4 were learning live in
-# that drive; 21.0 and 28.0 came out of the cache from earlier drives on the
-# same car (that route saw nothing above 18.7 m/s) but are still this CX-9's
-# own measurements, replacing the CX-5 values they were seeded from. Every bin
-# lands well inside the sanity bounds of the seed it replaces - nothing was
-# clipped. 35.0 has still never gone valid on this car, so its laf is scaled up
-# from the CX-5's learned 1.76: the CX-9 runs 10-13% above the CX-5 in both
-# highway bins it has measured (21.0 x1.10, 28.0 x1.13), and applying the CX-5's
-# own 28->35 rise to the CX-9's 28.0 lands in the same place (1.96 vs 1.98).
-# Friction shows no such offset (x1.01 across those bins) and keeps the CX-5
-# value. Erring high on laf is the quiet direction - it asks for less torque.
+# Learned on a CX-9 with a CX-5 2022 donor EPS. The stock EPS keeps the 45 kph steering
+# floor, so it receives only the bins above it, which sit on the same 800-count scale.
+# Measurements were refreshed from this car's LiveTorqueParameters cache on 2026-08-25.
+# The unlearned 35 m/s LAF is extrapolated from the measured CX-9/CX-5 highway offset;
+# friction retains the CX-5 value.
 speed_bp    = [6.5, 9.5, 12.0, 16.4, 21.0, 28.0, 35.0]
 laf_bp      = [2.67, 2.70, 2.56, 1.53, 1.28, 1.72, 1.97]
 friction_bp = [0.161, 0.154, 0.116, 0.163, 0.136, 0.128, 0.108]
+
+[MAZDA_CX5_KE]
+# Apply these values only to a KE with a detected CX-5 2022 donor EPS. The stock EPS
+# uses a flat 800-count scale and a 45 kph steering floor.
+requires_steer_to_zero = true
+# The CX-5 2022 table copied unchanged: the donor EPS is the EPS those bins were learned
+# under, and no KE has its own fit yet. seed_version mirrors the source table.
+speed_bp    = [6.5, 9.5, 12.0, 16.4, 21.0, 28.0, 35.0]
+laf_bp      = [2.42, 2.86, 2.29, 1.21, 1.22, 1.53, 1.76]
+friction_bp = [0.160, 0.143, 0.124, 0.145, 0.133, 0.122, 0.108]
+seed_version = 1
