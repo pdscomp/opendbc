@@ -914,3 +914,50 @@ class TestAlphaLongTakeoverStates:
     _, ret_sp = car_interface(alpha_long=False).update([])
     assert not ret_sp.alphaLongTakeoverPending
     assert not ret_sp.alphaLongTakeoverInitializing
+
+
+@pytest.mark.parametrize("candidate", [CAR.MAZDA_CX5, CAR.MAZDA_CX5_2022])
+def test_ti_rejected_echo_source_count_and_health_are_independent(candidate):
+  ci = ti_interface(candidate=candidate)
+  pkr = packer()
+  feedback = make_ti_feedback()
+  feedback_addr, feedback_dat, _ = feedback
+  feed(ci, 0, (feedback_addr, feedback_dat, 193))
+  assert not ci.CS.ti_feedback_seen
+  assert not ci.CS.ti_lkas_allowed
+
+  addr, dat, _ = mazdacan.create_ti_steering_control(pkr, 300)
+  for i, src in enumerate((0, 1, 2, 128, 129, 192, 193, 194), start=1):
+    _, ret_sp = feed(ci, i, feedback, (addr, dat, src))
+    assert ci.CS.ti_lkas_rejected == int(src == 193)
+    assert ci.CS.lkas_rejected == 0
+    assert ci.CS.ti_lkas_allowed
+    assert ret_sp.torqueInterceptorReady
+
+  rejected = []
+  for torque in (300, -300, 0):
+    addr, dat, _ = mazdacan.create_ti_steering_control(pkr, torque)
+    rejected.append((addr, dat, 193))
+  feed(ci, 20, feedback, *rejected)
+  assert ci.CS.ti_lkas_rejected == 3
+  assert ci.CS.lkas_rejected == 0
+  assert ci.CS.ti_lkas_allowed
+
+  addr, dat, _ = mazdacan.create_steering_control(pkr, ci.CP, 21, 300, ci.CS.cam_lkas)
+  feed(ci, 21, feedback, (addr, dat, 192))
+  assert ci.CS.lkas_rejected == 1
+  assert ci.CS.ti_lkas_rejected == 0
+
+  for i in range(22, 322):
+    feed(ci, i)
+    assert ci.CS.ti_lkas_rejected == 0
+  assert not ci.CS.ti_lkas_allowed
+  rejected_parser = ci.can_parsers[Bus.alt]
+  assert rejected_parser.bus == 193
+  assert rejected_parser.message_states[0x249].ignore_alive
+  assert rejected_parser.can_valid
+  assert not rejected_parser.bus_timeout
+
+  native_ci = car_interface(alpha_long=False, candidate=candidate)
+  assert Bus.alt not in native_ci.can_parsers
+  assert native_ci.CS.ti_lkas_rejected == 0

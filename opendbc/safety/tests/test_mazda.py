@@ -933,7 +933,8 @@ class MazdaTorqueInterceptorSafetyMixin:
   STZ/long parents (their SAFETY_PARAM bits select the same envelope here); this mixin adds the
   0x249 path: TI panda limits 600/12/25/384 with driver 15/40 are exercised functionally below
   (601 rejection, +13 rate rejection, 384 RT window, driver-bound rejection). The CX-8's tighter
-  DELTA_DOWN (15 vs the panda's 25) is strictly inside the panda envelope, never outside."""
+  DELTA_DOWN (15 vs the panda's 25) can be rejected when the opposing-driver bound contracts;
+  parser/controller recovery must restart from zero without weakening this envelope."""
   TI_PARAM: int
 
   def _reset_ti_safety(self):

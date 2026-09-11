@@ -120,6 +120,11 @@ class CarController(CarControllerBase, IntelligentCruiseButtonManagementInterfac
     # the command down at STEER_DELTA_DOWN rather than holding or stepping to zero. Zero demand
     # at standstill; the 600 ceiling and RT window come from TorqueInterceptorControllerParams.
     if self.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR:
+      if CS.ti_lkas_rejected:
+        # Panda resets both TI rate references on rejection. Restart our ramp too.
+        self.ti_apply_torque_last = 0
+        self.ti_rt_torque_last = 0
+        self.ti_rt_torque_last_ts = now_nanos
       if CC.latActive and CS.ti_lkas_allowed:
         ti_steer_max = self.ti_params.STEER_MAX
         ti_new_torque = int(round(CC.actuators.torque * ti_steer_max))

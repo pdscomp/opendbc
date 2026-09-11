@@ -71,6 +71,7 @@ class CarState(CarStateBase, CarStateExt):
 
     # Fork: torque interceptor on the AUX bus owns the driver-torque channel when fitted.
     self.ti_lkas_allowed = False
+    self.ti_lkas_rejected = 0
     self.ti_feedback_seen = False
     self.ti_feedback_silent_frames = TI_FEEDBACK_FRESH_FRAMES
     self.distance_more_button = 0
@@ -177,6 +178,8 @@ class CarState(CarStateBase, CarStateExt):
     ret.steeringAngleDeg = cp.vl["STEER"]["STEER_ANGLE"]
     ti_enabled = bool(self.CP.flags & MazdaFlags.TORQUE_INTERCEPTOR)
     if ti_enabled:
+      # Panda-rejected AUX commands, not TI health feedback; count only this update.
+      self.ti_lkas_rejected = len(can_parsers[Bus.alt].vl_all["CAM_LKAS2"]["LKAS_REQUEST"])
       # The TI's own torque sensor replaces the EPS's driver channel (it is downstream of the
       # interceptor). Its 50 Hz feedback must stay fresh and healthy or lateral is not allowed.
       cp_body = can_parsers[Bus.body]
@@ -450,4 +453,6 @@ class CarState(CarStateBase, CarStateExt):
       # TI feedback owns a tighter Mazda-local freshness gate. It is optional accessory
       # traffic, so its protection pause must not poison whole-vehicle CAN validity.
       parsers[Bus.body] = CANParser(DBC[CP.carFingerprint][Bus.pt], [("TI_FEEDBACK", float("nan"))], 1)
+      # Rejected AUX TX echoes: bus 1 + 0xC0. Optional, like native rejected TX.
+      parsers[Bus.alt] = CANParser(DBC[CP.carFingerprint][Bus.pt], [("CAM_LKAS2", float("nan"))], 193)
     return parsers

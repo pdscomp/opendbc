@@ -14,7 +14,10 @@ from opendbc.car import Bus, structs
 from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.carcontroller import CarController, laneinfo_present_lkas_on
 from opendbc.car.mazda.interface import CarInterface
+from opendbc.car.mazda.tests.test_mazda_carstate import feed, make_ti_feedback, ti_interface, t_ns
 from opendbc.car.mazda.values import CAR, MazdaFlags, TorqueInterceptorControllerParams
+from opendbc.safety.tests.common import make_msg
+from opendbc.safety.tests.libsafety import libsafety_py
 
 CRZ_BTNS = 0x9d
 
@@ -37,6 +40,7 @@ def _steering_state(*, healthy=True, driver_torque=0, speed=5.):  # above the TI
                         canValid=True, cruiseState=SimpleNamespace(available=False, enabled=False),
                         standstill=False),
     ti_lkas_allowed=healthy,
+    ti_lkas_rejected=0,
     crz_btns_counter=0,
     cancel_button=1,  # suppress unrelated ICBM output
     accel_button=0,
@@ -321,6 +325,117 @@ class TestLaneinfoLkasSpoof:
     cp = CANParser("mazda_2017", [("CAM_LANEINFO", float("nan"))], 0)
     cp.update([(0, [(0x440, laneinfo, 0)])])
     assert cp.vl["CAM_LANEINFO"]["LANE_LINES"] == 2
+
+
+@pytest.mark.parametrize("candidate", [CAR.MAZDA_CX5, CAR.MAZDA_CX5_2022])
+@pytest.mark.parametrize("sign", [-1, 1])
+@pytest.mark.parametrize("cause", ["pause", "unhealthy", "opposed_pause", "driver"])
+def test_ti_rejection_recovery_through_parser_and_compiled_safety(candidate, sign, cause):
+  ci = ti_interface(candidate=candidate)
+  controller = ci.CC
+  pkr = CANPacker("mazda_2017")
+  safety = libsafety_py.libsafety
+  safety.init_tests()
+  assert safety.set_safety_hooks(
+    structs.CarParams.SafetyModel.mazda, int(ci.CP.safetyConfigs[0].safetyParam),
+  ) == 0
+  safety.set_mads_params(True, False, False)
+  # CarState lazily registers ordinary PT signals on its first update. Do that
+  # before the first speed-bearing sample; do not fake vEgo or readiness fields.
+  feed(ci, 0)
+  index = 1
+  echoes = []
+
+  def tick(*, active=True, healthy=True, driver=0, demand=0.5):
+    nonlocal index, echoes
+    feedback = make_ti_feedback(driver, STATE=3 if healthy else 1, VIOL=0 if healthy else 0x11)
+    feed(
+      ci, index,
+      pkr.make_can_msg("WHEEL_SPEEDS", 0, {k: 36.0 for k in ("FL", "FR", "RL", "RR")}),
+      pkr.make_can_msg("ENGINE_DATA", 0, {"SPEED": 36.0}),
+      feedback, *echoes,
+    )
+    assert ci.CS.ti_lkas_allowed is healthy
+    assert ci.CS.out.vEgoRaw > controller.ti_params.STANDSTILL_ZERO_SPEED
+    safety.set_timer(index * 10_000)
+    addr, dat, bus = feedback
+    assert safety.safety_rx_hook(make_msg(bus, addr, len(dat), dat))
+    safety.set_controls_allowed(True)
+    safety.set_controls_allowed_lateral(active)
+    assert safety.safety_fwd_hook(2, 0x243) == (-1 if active else 0)
+    sends = _steering_step(controller, ci.CS, torque=sign * demand,
+                           lat_active=active, now_nanos=t_ns(index))
+    addr, dat, bus = next(msg for msg in sends if msg[0] == 0x249)
+    assert bus == 1
+    command = _command_torque(sends, 0x249)
+    accepted = bool(safety.safety_tx_hook(make_msg(bus, addr, len(dat), dat)))
+    # Emulate transport annotation only; compiled safety made the decision.
+    echoes = [(addr, dat, bus + (0x80 if accepted else 0xC0))]
+    assert abs(command) <= 600
+    index += 1
+    return command, accepted
+
+  try:
+    up = controller.ti_params.STEER_DELTA_UP
+    down = controller.ti_params.STEER_DELTA_DOWN
+    stz = bool(ci.CP.flags & MazdaFlags.STEER_TO_ZERO_EPS)
+    for _ in range(300 // up):
+      command, accepted = tick()
+      assert accepted
+    assert command == sign * 300
+
+    if cause == "driver":
+      for k in range(20):
+        command, accepted = tick(driver=-30 * sign)
+        if not stz and k == 5:
+          assert (command, accepted) == (sign * 210, False)
+        elif not stz and k == 6:
+          assert (command, accepted) == (0, True)
+          assert ci.CS.ti_lkas_rejected == 1
+          assert controller.ti_rt_torque_last == 0
+          assert controller.ti_rt_torque_last_ts == t_ns(index - 1)
+        else:
+          assert accepted
+      assert command == 0
+    else:
+      command, accepted = tick(active=cause == "unhealthy", healthy=cause != "unhealthy")
+      assert (command, accepted) == (sign * (300 - down), False)
+      driver = -30 * sign if cause == "opposed_pause" else 0
+      command, accepted = tick(driver=driver)
+      assert (command, accepted) == (0 if driver else sign * up, True)
+      assert ci.CS.ti_lkas_rejected == 1
+      assert controller.ti_rt_torque_last == 0
+      assert controller.ti_rt_torque_last_ts == t_ns(index - 1)
+
+    for _ in range(150):
+      command, accepted = tick(demand=1.0)
+      assert accepted
+      assert ci.CS.ti_lkas_rejected == 0
+    assert command == sign * 600
+  finally:
+    safety.init_tests()
+    safety.set_safety_hooks(structs.CarParams.SafetyModel.mazda, 0)
+
+
+@pytest.mark.parametrize("steer_to_zero", [False, True])
+def test_ti_and_native_rejection_histories_are_independent(steer_to_zero):
+  controller = _steering_controller(ti=True, steer_to_zero=steer_to_zero)
+  state = _steering_state(speed=10.0)
+  up = controller.ti_params.STEER_DELTA_UP
+  for i in range(8):
+    sends = _steering_step(controller, state, now_nanos=t_ns(i))
+  previous_ti = _command_torque(sends, 0x249)
+  state.lkas_rejected = 1
+  sends = _steering_step(controller, state, now_nanos=t_ns(8))
+  assert _command_torque(sends, 0x243) == controller.params.STEER_DELTA_UP
+  assert _command_torque(sends, 0x249) == previous_ti + up
+  state.lkas_rejected = 0
+  state.ti_lkas_rejected = 1
+  sends = _steering_step(controller, state, now_nanos=t_ns(9))
+  assert _command_torque(sends, 0x243) == 2 * controller.params.STEER_DELTA_UP
+  assert _command_torque(sends, 0x249) == up
+  assert controller.ti_rt_torque_last == 0
+  assert controller.ti_rt_torque_last_ts == t_ns(9)
 
 
 if __name__ == "__main__":
