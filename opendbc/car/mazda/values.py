@@ -19,8 +19,8 @@ class CarControllerParams:
   # their numbers from here. Evidence for every constant below: the Constants tables in
   # docs/zoompilot/mazda-lateral.md and mazda-longitudinal.md.
   EPS_STEER_MAX = 1200            # theoretical max_steer 2047
-  STEER_DELTA_UP = 12             # torque increase per refresh, the EPS's own slew
-  STEER_DELTA_DOWN = 12           # torque decrease per refresh
+  STEER_DELTA_UP = 10             # torque increase per refresh: the EPS's own ~1000 counts/s slew
+  STEER_DELTA_DOWN = 10           # torque decrease per refresh
   STEER_DRIVER_ALLOWANCE = 15     # allowed driver torque before start limiting
   STEER_DRIVER_MULTIPLIER = 15    # weight driver torque, tuned for the 2022 EPS
   STEER_DRIVER_FACTOR = 1         # from dbc

@@ -118,7 +118,7 @@ SCENARIO = [
   _phase("radar_silenced_armed_idle", 100, dict(BOOT, **SILENCED, available=True),
          lambda i, _: {"brake_pressed": i < 50, "hbc_request": 25 <= i < 75}),
   _phase("engage_steer_ramp", 220, dict(ENGAGED, **LEAD_30, v_ego=10.0, accel=1.0), _driver_fight),
-  _phase("highway_rail", 170, dict(ENGAGED, **NO_LEAD, v_ego=20.0, accel=0.2, hbc_request=True), _highway),
+  _phase("highway_rail", 190, dict(ENGAGED, **NO_LEAD, v_ego=20.0, accel=0.2, hbc_request=True), _highway),
   _phase("approach_stop", 100, dict(ENGAGED, lead_visible=True, lead_d_rel=6.0, lead_v_rel=-1.0,
                                      long_state=LongCtrlState.stopping, accel=-1.5, torque=0.1), _approach),
   _phase("hold_on_the_plan", 150, dict(ENGAGED, **LEAD_4, long_state=LongCtrlState.stopping, accel=-1.024,
@@ -248,7 +248,8 @@ def test_scenario_reaches_every_state():
   assert SESSION_DFLT_DAT in {d for _, d in uds("handback")} and TESTER_PRESENT_DAT not in {d for _, d in uds("handback")}
   assert 0x21b in tx_addrs("handback")
   assert max(r["torque_can"] for r in by_phase["engage_steer_ramp"]) > 1000
-  # the 10 m/s command winds down at STEER_DELTA_DOWN a frame and settles on the 620 rail
+  # the 10 m/s command winds down at STEER_DELTA_DOWN a frame, settles on the 620 rail, then walks
+  # to the opposite rail at 10 a frame (190 frames leave room for the 123-frame crossing)
   assert by_phase["highway_rail"][49]["torque_can"] == 620
   assert min(r["torque_can"] for r in by_phase["highway_rail"]) == -620
   assert {r["accel"] for r in by_phase["hold_on_the_plan"][-50:]} == {-1.024}
