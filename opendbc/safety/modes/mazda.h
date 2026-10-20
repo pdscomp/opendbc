@@ -226,10 +226,10 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     .type = TorqueDriverLimited,
   };
 
-  // CRZ_INFO.ACCEL_CMD uses 0.001 m/s2 raw units after removing the offset.
+  // CRZ_INFO.ACCEL_CMD uses 1/1024 m/s2 raw units after removing the offset: 2.0 and -3.5 m/s2.
   const LongitudinalLimits MAZDA_LONG_LIMITS = {
-    .max_accel = 2000,
-    .min_accel = -3500,
+    .max_accel = 2048,
+    .min_accel = -3584,
     .inactive_accel = 0,
   };
 

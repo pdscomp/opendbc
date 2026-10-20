@@ -15,7 +15,7 @@ from opendbc.car.mazda.tests.conftest import CRZ_BTNS, LongCtrlState, addrs, car
 
 class TestResumeButton:
 
-  @pytest.mark.parametrize("accel", [0.3, -1.024])
+  @pytest.mark.parametrize("accel", [0.3, -1.0])
   @pytest.mark.parametrize("standstill", [True, False])
   def test_no_resume_button_while_openpilot_owns_longitudinal(self, cc, accel, standstill):
     # We are the ACC here, so the hold is released in-protocol. The car's own MRCC never presses

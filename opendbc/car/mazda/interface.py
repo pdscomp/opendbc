@@ -72,7 +72,7 @@ class CarInterface(CarInterfaceBase):
       # The car owns engagement and preserves its setpoint through radar teardown.
       ret.pcmCruise = True
       ret.radarUnavailable = True
-      ret.stopAccel = -1.024  # stock MRCC standstill command
+      ret.stopAccel = -1.0  # stock MRCC standstill command, raw -1024
       ret.longitudinalActuatorDelay = 0.36  # measured ~0.3 s dead time + ~0.3 s first-order lag
 
     carlog.debug({"event": "mazdaRadarVerdict", "radarUnavailable": ret.radarUnavailable,

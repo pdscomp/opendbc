@@ -78,13 +78,13 @@ def test_crz_info_armed_idle_matches_stock(packer, brake_pressed, byte4, base, c
 
 @pytest.mark.parametrize("accel, stopping, unlatching, counter, expected", [
   (0.0, False, False, 0, "01ffe20006800097"),     # engaged, zero command
-  (2.0, False, False, 3, "01ffe2fa0680039a"),     # ISO max accel, raw 2000
-  (-3.5, False, False, 7, "01ffe04a868007c8"),    # ISO max brake, raw -3500
-  (-1.024, True, False, 5, "01ffe18006841503"),   # standstill hold, raw -1024 + stop bits
-  (-0.001, False, False, 9, "01ffe1ffe68009b0"),  # latched hold, raw -1
+  (2.0, False, False, 3, "01ffe30006800393"),     # ISO max accel, raw 2048
+  (-3.5, False, False, 7, "01ffe04006800752"),    # ISO max brake, raw -3584
+  (-1.0, True, False, 5, "01ffe18006841503"),     # standstill hold, raw -1024 + stop bits
+  (-1 / 1024, False, False, 9, "01ffe1ffe68009b0"),  # latched hold, raw -1
   (0.0, False, True, 11, "01ffe20006804b8c"),     # resume unlatch pulse
   # The unlatch bit is excluded, so this checksum matches the counter-zero hold frame.
-  (-0.001, False, True, 0, "01ffe1ffe68040b9"),
+  (-1 / 1024, False, True, 0, "01ffe1ffe68040b9"),
 ])
 def test_crz_info_engaged_golden_bytes(packer, accel, stopping, unlatching, counter, expected):
   dat = mazdacan.create_acc_command(packer, 0, counter, accel, long_active=True, acc_available=False,
@@ -94,10 +94,10 @@ def test_crz_info_engaged_golden_bytes(packer, accel, stopping, unlatching, coun
 
 @pytest.mark.parametrize("stopping, unlatching", [(False, False), (True, False), (False, True)])
 def test_crz_info_accel_encoding_and_checksum(packer, stopping, unlatching):
-  # the packed command must round-trip at the 0.001 factor and carry a valid masked-bit
+  # the packed command must round-trip at the 1/1024 factor and carry a valid masked-bit
   # checksum over the whole command window, stop bits set or not
-  for raw in range(-3500, 2001, 137):
-    dat = mazdacan.create_acc_command(packer, 0, raw % 16, raw / 1000.0, long_active=True, acc_available=False,
+  for raw in range(-3584, 2049, 137):
+    dat = mazdacan.create_acc_command(packer, 0, raw % 16, raw / 1024.0, long_active=True, acc_available=False,
                                       stopping=stopping, resume_unlatching=unlatching)[1]
     assert decode_accel_cmd_raw(dat) == raw
     assert dat[7] == crz_info_reference_checksum(dat)
