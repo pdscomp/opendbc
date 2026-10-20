@@ -78,7 +78,8 @@ class CarInterface(CarInterfaceBase):
     carlog.debug({"event": "mazdaRadarVerdict", "radarUnavailable": ret.radarUnavailable,
                   "platformClaim": Bus.radar in DBC[candidate], "g46lRadar": g46l_radar, "steerToZeroEps": steer_to_zero})
 
-    ret.enableBsm = 0x477 in fingerprint[0]
+    if 0x477 in fingerprint[0]:
+      ret.flags |= MazdaFlags.HAS_BSM.value
 
     # lagd starts from this plus 0.2 s; CX-5 drives learn 0.23-0.26 s request-to-yaw.
     ret.steerActuatorDelay = 0.05

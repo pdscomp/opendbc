@@ -17,6 +17,7 @@ from opendbc.car.ford.values import FordFlags
 from opendbc.car.gm.values import GMFlags
 from opendbc.car.honda.values import HondaFlags
 from opendbc.car.hyundai.values import HyundaiFlags
+from opendbc.car.mazda.values import MazdaFlags
 from opendbc.car.subaru.values import SubaruFlags
 from opendbc.car.toyota.values import ToyotaFlags
 from opendbc.car.volkswagen.values import VolkswagenFlags
@@ -91,6 +92,7 @@ BSM_FLAGS = {
   "gm": GMFlags.HAS_BSM,
   "honda": HondaFlags.HAS_BSM,
   "hyundai": HyundaiFlags.HAS_BSM,
+  "mazda": MazdaFlags.HAS_BSM,
   "subaru": SubaruFlags.HAS_BSM,
   "toyota": ToyotaFlags.HAS_BSM,
   "volkswagen": VolkswagenFlags.HAS_BSM,

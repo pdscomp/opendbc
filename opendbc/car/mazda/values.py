@@ -143,6 +143,9 @@ class MazdaFlags(IntFlag):
   # The G46L radar's dialect bit; see G46L_RADAR_FW below.
   G46L_RADAR = 8
 
+  # Blind spot frame 0x477 present.
+  HAS_BSM = 16
+
 
 class MazdaSafetyFlags(IntFlag):
   LONG = 1

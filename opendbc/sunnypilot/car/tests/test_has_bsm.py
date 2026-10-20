@@ -15,7 +15,7 @@ from opendbc.testing import parameterized
 class TestHasBsm(unittest.TestCase):
 
   # car, bus and address of the BSM message upstream detects (None: always available)
-  @parameterized("car_name, bus, addr", [("TOYOTA_RAV4_TSS2", 0, 0x3F6), ("RIVIAN_R1", 1, 0x131a), ("TESLA_MODEL_3", None, None)])
+  @parameterized("car_name, bus, addr", [("TOYOTA_RAV4_TSS2", 0, 0x3F6), ("MAZDA_CX5_2022", 0, 0x477), ("RIVIAN_R1", 1, 0x131a), ("TESLA_MODEL_3", None, None)])
   def test_has_bsm(self, car_name, bus, addr):
     for present in (False, True):
       fingerprint = gen_empty_fingerprint()
