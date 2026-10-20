@@ -422,7 +422,7 @@ def run_stack(ci, phases, mads=False):
           safety.safety_rx_hook(libsafety_py.make_CANPacket(addr, bus, dat))
           if bus == 2 and addr in (0x243, 0x440):
             fwd.append([addr, safety.safety_fwd_hook(bus, addr)])
-        safety.safety_tick_current_safety_config()
+        safety.safety_tick()
 
         cs, cs_sp = ci.update([(t, msgs + loopback)])
         actuators, sends = ci.apply(car_control(**cc_kw), car_control_sp(**cc_sp_kw), t)
