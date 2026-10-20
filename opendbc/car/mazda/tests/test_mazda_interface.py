@@ -103,7 +103,7 @@ class TestMazdaEps:
     # no longer separates the platforms: the pre-2022 racks run the 2022's 18.1 too.
     swapped = car_params(CAR.MAZDA_CX5, car_fw=eps_fw(SWAPPED_EPS_FW))
     cx5_2022 = car_params(CAR.MAZDA_CX5_2022)
-    assert swapped.mass != cx5_2022.mass
+    assert swapped.wheelbase != cx5_2022.wheelbase
     assert swapped.tireStiffnessFactor != cx5_2022.tireStiffnessFactor
 
   @pytest.mark.parametrize("candidate", [CAR.MAZDA_CX5_KE, CAR.MAZDA_CX5, CAR.MAZDA_CX9, CAR.MAZDA_3, CAR.MAZDA_6])
