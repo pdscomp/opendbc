@@ -11,9 +11,10 @@
 # speed_bin_seeds.py, friction converted to the learner's terms (the offline fit reads ~15% high
 # beside the device's 6.5 m/s bin). Version 3: the new bin changes the centers, which retires the
 # caches regardless. Provenance and fits: docs/zoompilot/lateral-tune.md, "Seeds".
+# 2026-10-21: the 3.5 and 6.5 m/s friction seeds (0.220, 0.206) cut to 0.125 by hand.
 speed_bp    = [3.5, 6.5, 9.5, 12.0, 16.4, 21.0, 28.0, 34.5, 37.0]
 laf_bp      = [1.80, 2.16, 2.37, 1.94, 1.69, 1.80, 1.96, 2.20, 2.31]
-friction_bp = [0.220, 0.206, 0.151, 0.143, 0.140, 0.122, 0.105, 0.095, 0.085]
+friction_bp = [0.125, 0.125, 0.151, 0.143, 0.140, 0.122, 0.105, 0.095, 0.085]
 min_speed = 2.0
 seed_version = 3
 
