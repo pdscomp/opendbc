@@ -102,9 +102,9 @@ class TestMazdaEps:
     # EPS detection must not replace the chassis-specific physical parameters. steerRatio
     # no longer separates the platforms: the pre-2022 racks run the 2022's 18.1 too.
     swapped = car_params(CAR.MAZDA_CX5, car_fw=eps_fw(SWAPPED_EPS_FW))
-    cx5_2022 = car_params(CAR.MAZDA_CX5_2022)
-    assert swapped.wheelbase != cx5_2022.wheelbase
-    assert swapped.tireStiffnessFactor != cx5_2022.tireStiffnessFactor
+    stock = car_params(CAR.MAZDA_CX5)
+    assert swapped.wheelbase == stock.wheelbase
+    assert swapped.tireStiffnessFactor == stock.tireStiffnessFactor
 
   @pytest.mark.parametrize("candidate", [CAR.MAZDA_CX5_KE, CAR.MAZDA_CX5, CAR.MAZDA_CX9, CAR.MAZDA_3, CAR.MAZDA_6])
   def test_docs_are_generated_without_firmware(self, candidate):
