@@ -291,7 +291,7 @@ def hands_code(dat) -> tuple[int, int, int]:
 def crz_info(dat) -> tuple[int, bool, bool]:
   """(ACCEL_CMD raw, STOPPING, RESUME_UNLATCHING) from a CRZ_INFO frame."""
   v = parse_frame(CRZ_INFO, dat)
-  return round(v["ACCEL_CMD"] * 1000), bool(v["STOPPING"]), bool(v["RESUME_UNLATCHING"])
+  return round(v["ACCEL_CMD"] * 1024), bool(v["STOPPING"]), bool(v["RESUME_UNLATCHING"])
 
 
 def accel_cmd_raw(sends, bus=0) -> int | None:

@@ -161,7 +161,7 @@ class TestMazdaSafety(common.CarSafetyTest, common.DriverTorqueSteeringSafetyTes
 
 class TestMazdaEpsSafety(TestMazdaSafety):
   """Every gen1 Mazda EPS, steer-to-zero and legacy firmware alike: MazdaSafetyFlags.EPS_HW selects
-  the 1200-count envelope with the EPS's own 12/12 slew. The numbers are the controller's, so the
+  the 1200-count envelope with the EPS's own 10/10 slew. The numbers are the controller's, so the
   panda is proven against exactly what the car side runs."""
 
   SAFETY_PARAM = MazdaSafetyFlags.EPS_HW
@@ -170,13 +170,13 @@ class TestMazdaEpsSafety(TestMazdaSafety):
   MAX_RATE_DOWN = CarControllerParams.STEER_DELTA_DOWN
   MAX_TORQUE_LOOKUP = [0], [CarControllerParams.EPS_STEER_MAX]
 
-  MAX_RT_DELTA = 384
+  MAX_RT_DELTA = 320
 
   DRIVER_TORQUE_ALLOWANCE = CarControllerParams.STEER_DRIVER_ALLOWANCE
   DRIVER_TORQUE_FACTOR = CarControllerParams.STEER_DRIVER_MULTIPLIER
 
   def test_upstream_envelope_without_the_bit(self):
-    # with it clear upstream's limits refuse the very first frame above 800 and the 12-count ramp.
+    # with it clear upstream's limits refuse the very first frame above 800.
     # 4, the retired legacy-firmware bit, selects nothing: a car side that still sends it alone
     # gets the stricter limits, never looser ones
     for param in (0, 4):

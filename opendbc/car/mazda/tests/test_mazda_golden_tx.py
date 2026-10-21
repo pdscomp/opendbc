@@ -118,17 +118,17 @@ SCENARIO = [
   _phase("radar_silenced_armed_idle", 100, dict(BOOT, **SILENCED, available=True),
          lambda i, _: {"brake_pressed": i < 50, "hbc_request": 25 <= i < 75}),
   _phase("engage_steer_ramp", 220, dict(ENGAGED, **LEAD_30, v_ego=10.0, accel=1.0), _driver_fight),
-  _phase("highway_rail", 170, dict(ENGAGED, **NO_LEAD, v_ego=20.0, accel=0.2, hbc_request=True), _highway),
+  _phase("highway_rail", 190, dict(ENGAGED, **NO_LEAD, v_ego=20.0, accel=0.2, hbc_request=True), _highway),
   _phase("approach_stop", 100, dict(ENGAGED, lead_visible=True, lead_d_rel=6.0, lead_v_rel=-1.0,
                                      long_state=LongCtrlState.stopping, accel=-1.5, torque=0.1), _approach),
-  _phase("hold_on_the_plan", 150, dict(ENGAGED, **LEAD_4, long_state=LongCtrlState.stopping, accel=-1.024,
+  _phase("hold_on_the_plan", 150, dict(ENGAGED, **LEAD_4, long_state=LongCtrlState.stopping, accel=-1.0,
                                         standstill=True, torque=0.1)),
-  _phase("hold_body_latched", 100, dict(ENGAGED, **LEAD_4, long_state=LongCtrlState.stopping, accel=-1.024,
+  _phase("hold_body_latched", 100, dict(ENGAGED, **LEAD_4, long_state=LongCtrlState.stopping, accel=-1.0,
                                          standstill=True, body_hold=True, torque=0.1)),
   _phase("latched_release", 120, dict(ENGAGED, **LEAD_4, accel=1.0, standstill=True, torque=0.1), _body_answers_pulse),
   _phase("drive_off", 100, dict(ENGAGED, **LEAD_4, accel=0.6, torque=0.1), _drive_off),
   _phase("second_approach", 50, dict(ENGAGED, **LEAD_4, long_state=LongCtrlState.stopping, accel=-1.0, v_ego=1.0)),
-  _phase("hold_never_latched", 100, dict(ENGAGED, **LEAD_4, long_state=LongCtrlState.stopping, accel=-1.024, standstill=True)),
+  _phase("hold_never_latched", 100, dict(ENGAGED, **LEAD_4, long_state=LongCtrlState.stopping, accel=-1.0, standstill=True)),
   _phase("never_latched_release_breakaway", 100, dict(ENGAGED, **LEAD_4, accel=0.45, standstill=True)),
   _phase("moving_again", 50, dict(ENGAGED, **LEAD_4, accel=0.45, v_ego=1.5)),
   _phase("gas_override", 60, dict(ENGAGED, **LEAD_30, long_active=False, long_state=LongCtrlState.off, accel=0., gas=True,
@@ -248,11 +248,12 @@ def test_scenario_reaches_every_state():
   assert SESSION_DFLT_DAT in {d for _, d in uds("handback")} and TESTER_PRESENT_DAT not in {d for _, d in uds("handback")}
   assert 0x21b in tx_addrs("handback")
   assert max(r["torque_can"] for r in by_phase["engage_steer_ramp"]) > 1000
-  # the 10 m/s command winds down at STEER_DELTA_DOWN a frame and settles on the 620 rail
+  # the 10 m/s command winds down at STEER_DELTA_DOWN a frame, settles on the 620 rail, then walks
+  # to the opposite rail at 10 a frame (190 frames leave room for the 123-frame crossing)
   assert by_phase["highway_rail"][49]["torque_can"] == 620
   assert min(r["torque_can"] for r in by_phase["highway_rail"]) == -620
-  assert {r["accel"] for r in by_phase["hold_on_the_plan"][-50:]} == {-1.024}
-  assert {r["accel"] for r in by_phase["hold_body_latched"][-10:]} == {-0.001}
+  assert {r["accel"] for r in by_phase["hold_on_the_plan"][-50:]} == {-1.0}
+  assert {r["accel"] for r in by_phase["hold_body_latched"][-10:]} == {-0.001}  # raw -1, recorded to 4 decimals
   # a body-latched hold releases in-protocol: the pulse, and no button frame
   assert crz_info_unlatching("latched_release") and 0x9d not in tx_addrs("latched_release")
   assert not crz_info_unlatching("never_latched_release_breakaway")
@@ -479,9 +480,9 @@ ALPHA_LONG_DRIVE = _takeover(150) + [
                    "visual_alert": VisualAlert.steerRequired if 220 <= i < 280 else VisualAlert.none,
                    "laneinfo": HBC_LANEINFO if i >= 150 else IDLE_LANEINFO}),
   ("stop", 200, dict(ENGAGED_LONG, lead_visible=True, lead_d_rel=6., torque=0.1, driver_torque=0),
-   lambda i, sim: {"v": _ramp(sim.state["v"], -0.12, 0.), "accel": -1.5 if i < 100 else -1.024,
+   lambda i, sim: {"v": _ramp(sim.state["v"], -0.12, 0.), "accel": -1.5 if i < 100 else -1.0,
                    "long_state": LongCtrlState.stopping if i >= 80 else LongCtrlState.pid}),
-  ("body_holds", 150, dict(ENGAGED_LONG, lead_visible=True, lead_d_rel=4., long_state=LongCtrlState.stopping, accel=-1.024),
+  ("body_holds", 150, dict(ENGAGED_LONG, lead_visible=True, lead_d_rel=4., long_state=LongCtrlState.stopping, accel=-1.0),
    lambda i, _: {"hold": i >= 50}),
   ("unlatch_release", 150, dict(ENGAGED_LONG, lead_visible=True, lead_d_rel=4., accel=1.0),
    lambda i, sim: {"v": 0. if sim.state["hold"] else _ramp(sim.state["v"], 0.03, 3.)}),

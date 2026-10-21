@@ -100,10 +100,11 @@ class TestCarControllerParams:
 
   def test_steer_delta_matches_the_eps_rate_limit_at_this_steer_step(self):
     params = cx5_2022_params()
-    # Per-frame controller deltas must match the 100 Hz EPS hardware slew in both directions.
+    # Per-frame controller deltas must match the EPS hardware slew in both directions: 12 counts
+    # per 12 ms 0x241 frame, ~1000 counts/s (slope fits on 1157 saturated ramps: 921-934/s).
     rate_hz = 1.0 / DT_CTRL / CarControllerParams.STEER_STEP
-    assert params.STEER_DELTA_UP * rate_hz == pytest.approx(1200, rel=0.01)
-    assert params.STEER_DELTA_DOWN * rate_hz == pytest.approx(1200, rel=0.01)
+    assert params.STEER_DELTA_UP * rate_hz == pytest.approx(1000, rel=0.01)
+    assert params.STEER_DELTA_DOWN * rate_hz == pytest.approx(1000, rel=0.01)
 
   def test_cx5_2022_steer_max_is_flat(self):
     # one scale at every speed: the EPS is linear in counts, and a step would put the learned
@@ -112,8 +113,8 @@ class TestCarControllerParams:
 
   def test_cx5_2022_rate_limits(self):
     params = cx5_2022_params()
-    assert params.STEER_DELTA_UP == 12
-    assert params.STEER_DELTA_DOWN == 12
+    assert params.STEER_DELTA_UP == 10
+    assert params.STEER_DELTA_DOWN == 10
 
   @pytest.mark.parametrize("params", [cx5_2022_params, eps_swap_params, pre_2022_params, legacy_fw_params],
                            ids=["cx5_2022", "eps_swap", "pre_2022", "legacy_fw"])

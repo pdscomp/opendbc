@@ -15,7 +15,7 @@ from opendbc.car.mazda.longitudinal import (RELEASE_ACCEL, RELEASE_DEBOUNCE_FRAM
 
 
 def drive(sm, frames, **kwargs):
-  defaults = dict(long_engaged=True, stopping=False, standstill=False, plan_accel=-1.024,
+  defaults = dict(long_engaged=True, stopping=False, standstill=False, plan_accel=-1.0,
                   body_hold=False, gas_pressed=False)
   defaults.update(kwargs)
   for _ in range(frames):

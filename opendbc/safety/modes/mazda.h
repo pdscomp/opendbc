@@ -213,22 +213,23 @@ static bool mazda_tx_hook(const CANPacket_t *msg) {
     .type = TorqueDriverLimited,
   };
 
-  // The measured EPS envelope: the EPS's 12-count hardware slew, with max_rate_down equal to the
-  // controller retreat rate so driver-limit winddown frames remain valid.
+  // The measured EPS envelope: the EPS's ~1000 counts/s hardware slew (12 counts per 12 ms 0x241
+  // frame) at 100 Hz, with max_rate_down equal to the controller retreat rate so driver-limit
+  // winddown frames remain valid.
   const TorqueSteeringLimits MAZDA_EPS_HW_STEERING_LIMITS = {
     .max_torque = 1200,
-    .max_rate_up = 12,
-    .max_rate_down = 12,
-    .max_rt_delta = 384,
+    .max_rate_up = 10,
+    .max_rate_down = 10,
+    .max_rt_delta = 320,
     .driver_torque_multiplier = 15,
     .driver_torque_allowance = 15,
     .type = TorqueDriverLimited,
   };
 
-  // CRZ_INFO.ACCEL_CMD uses 0.001 m/s2 raw units after removing the offset.
+  // CRZ_INFO.ACCEL_CMD uses 1/1024 m/s2 raw units after removing the offset: 2.0 and -3.5 m/s2.
   const LongitudinalLimits MAZDA_LONG_LIMITS = {
-    .max_accel = 2000,
-    .min_accel = -3500,
+    .max_accel = 2048,
+    .min_accel = -3584,
     .inactive_accel = 0,
   };
 

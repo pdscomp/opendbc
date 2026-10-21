@@ -1,5 +1,5 @@
 from opendbc.car.can_definitions import CanData
-from opendbc.car.mazda.values import Buttons, MazdaFlags
+from opendbc.car.mazda.values import Buttons, CarControllerParams, MazdaFlags
 
 # Captured empty radar tracks required by the body ECU for stop-and-go. Only the counter
 # nibble changes.
@@ -30,7 +30,7 @@ def create_acc_command(packer, bus, counter, accel, *, long_active, acc_availabl
     "ERROR_STATUS": 1,
     "STATIC_1": 0x7ff,
     "CTR": counter % 16,
-    "ACCEL_CMD": accel if long_active else 4.094,  # stock non-controlling sentinel
+    "ACCEL_CMD": accel if long_active else 8190 * CarControllerParams.ACCEL_CMD_LSB - 4.,  # stock non-controlling sentinel, raw 8190
     "NEW_SIGNAL_7": int(long_active or acc_available),
   }
   if long_active:

@@ -19,8 +19,8 @@ class CarControllerParams:
   # their numbers from here. Evidence for every constant below: the Constants tables in
   # docs/zoompilot/mazda-lateral.md and mazda-longitudinal.md.
   EPS_STEER_MAX = 1200            # theoretical max_steer 2047
-  STEER_DELTA_UP = 12             # torque increase per refresh, the EPS's own slew
-  STEER_DELTA_DOWN = 12           # torque decrease per refresh
+  STEER_DELTA_UP = 10             # torque increase per refresh: the EPS's own ~1000 counts/s slew
+  STEER_DELTA_DOWN = 10           # torque decrease per refresh
   STEER_DRIVER_ALLOWANCE = 15     # allowed driver torque before start limiting
   STEER_DRIVER_MULTIPLIER = 15    # weight driver torque, tuned for the 2022 EPS
   STEER_DRIVER_FACTOR = 1         # from dbc
@@ -32,6 +32,8 @@ class CarControllerParams:
 
   ACCEL_MAX = 2.0   # m/s2
   ACCEL_MIN = -3.5  # m/s2
+  # CRZ_INFO.ACCEL_CMD resolution: stock's holds sit at raw -1024 and -410, i.e. -1.0 and -0.4 m/s2.
+  ACCEL_CMD_LSB = 1 / 1024  # m/s2 per count
 
   # Longitudinal message periods in 100 Hz control frames.
   LONG_STEP = 2        # CRZ_INFO/CRZ_CTRL at 50 Hz, matching stock
@@ -51,14 +53,14 @@ class CarControllerParams:
   CANCEL_SETTLE_T = 0.2       # s a cancel request must hold before the first press; the car answers its own inside it
 
   # Relax the command after the body ECU takes ownership of the brake hold.
-  ACCEL_HOLD_LATCHED = -0.001  # m/s2
+  ACCEL_HOLD_LATCHED = -ACCEL_CMD_LSB  # m/s2, raw -1
 
   # Match stock's ACCEL_CMD ceiling during a latched release pulse.
-  ACCEL_RESUME_PULSE_MAX = 0.25  # m/s2, latched releases only
+  ACCEL_RESUME_PULSE_MAX = 250 * ACCEL_CMD_LSB  # m/s2, raw 250, latched releases only
 
   # Match stock's one-frame relaxation and subsequent release ramp.
-  ACCEL_RELEASE_BAND = -0.26  # m/s2, the one-frame relax target at a never-latched release
-  ACCEL_RELEASE_RAMP = 1.25   # m/s3, stock's release ramp (+25 raw per 50 Hz frame)
+  ACCEL_RELEASE_BAND = -260 * ACCEL_CMD_LSB  # m/s2, raw -260, the one-frame relax target at a never-latched release
+  ACCEL_RELEASE_RAMP = 25 * ACCEL_CMD_LSB * 50  # m/s3, stock's release ramp (+25 raw per 50 Hz frame)
 
   # Permit a bounded breakaway ramp because Mazda longitudinal control has no integrator.
   ACCEL_BREAKAWAY_MAX = 1.45  # m/s2, ceiling for the still-stopped release ramp
@@ -70,7 +72,7 @@ class CarControllerParams:
   ACCEL_CEILING_BP = [0., 4., 9., 14., 18., 25.]  # m/s
   ACCEL_CEILING_V = [1.5, 1.75, 1.45, 1.05, 0.85, 0.65]  # m/s2
   ACCEL_BUILD_BP = [3., 6.]   # m/s
-  ACCEL_BUILD_V = [1.25, 0.8]  # m/s3
+  ACCEL_BUILD_V = [ACCEL_RELEASE_RAMP, 0.8]  # m/s3
   # Stock's throttle lift rate, while the plan is still >= 0; a brake request skips it.
   ACCEL_LIFT_LIMIT = -2.0  # m/s3
   # Limit upward plan-command slew in the brake region without delaying braking response.
