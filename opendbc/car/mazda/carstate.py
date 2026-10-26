@@ -328,10 +328,13 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
 
     # Stock LKAS must be switched on: the EPS applies no LKAS torque otherwise. Off is LANE_LINES 0
     # (the LAS switch) or both CAM_SETTINGS intervention bits clear; a car that never sends
-    # CAM_SETTINGS reads on (docs/zoompilot/mazda-lateral.md).
+    # CAM_SETTINGS reads on (docs/zoompilot/mazda-lateral.md). A faulted camera also sends LANE_LINES 0,
+    # with its error bits set; that is the camera fault (steerFaultPermanent), not the switch.
     if len(cp_cam.vl_all["CAM_SETTINGS"]["LKAS_INERVENTION_ON1"]) > 0:
       self.lkas_setting_on = any(cp_cam.vl["CAM_SETTINGS"][s] for s in ("LKAS_INERVENTION_ON1", "ILKAS_NTERVENTION_ON2"))
-    ret.invalidLkasSetting = (cam_laneinfo_fresh and cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0) or not self.lkas_setting_on
+    camera_faulted = cp_cam.vl["CAM_LANEINFO"]["ERR_BIT"] == 1 or cp_cam.vl["CAM_LKAS"]["ERR_BIT_1"] == 1
+    las_off = cam_laneinfo_fresh and cp_cam.vl["CAM_LANEINFO"]["LANE_LINES"] == 0 and not camera_faulted
+    ret.invalidLkasSetting = las_off or not self.lkas_setting_on
     self.update_lkas_arming(ret.invalidLkasSetting)
     self.lkas_setting_invalid = ret.invalidLkasSetting
 

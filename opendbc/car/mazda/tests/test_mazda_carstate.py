@@ -22,6 +22,7 @@ MAIN_OFF_DEBOUNCE_SAMPLES = CarControllerParams.MAIN_OFF_DEBOUNCE_SAMPLES
 from opendbc.sunnypilot.car.mazda.values import MazdaFlagsSP
 
 CAM_LANEINFO = 0x440
+CAM_LKAS = 0x243
 CAM_EMPTY = 0x21d
 CAM_PEDESTRIAN = 0x25d
 CAM_TRAFFIC_SIGNS = 0x35f
@@ -800,6 +801,25 @@ def test_intervention_bits_become_an_invalid_lkas_setting():
   assert not feed(CI, 12, on1_only)[0].invalidLkasSetting
   on2_only = pk.make_can_msg("CAM_SETTINGS", 2, {"LKAS_INERVENTION_ON1": 0, "ILKAS_NTERVENTION_ON2": 1})
   assert not feed(CI, 13, on2_only)[0].invalidLkasSetting
+
+
+def test_faulted_camera_is_not_the_las_switch():
+  # A faulted camera sends LANE_LINES 0 like the LAS switch, but with ERR_BIT set. Route
+  # 55b9388c74f60c82/00000157 (AU CX-5 2022) held this frame from power-on: read as the switch, the
+  # mici showed "LKAS is off" over the camera fault.
+  CI = car_interface(alpha_long=False)
+  las_off = bytes([0x42, 0, 0, 0, 0, 0, 0, 0])
+  faulted = bytes.fromhex("4300000000011040")
+  assert feed(CI, 0, (CAM_LANEINFO, las_off, 2))[0].invalidLkasSetting
+  assert not feed(CI, 1, (CAM_LANEINFO, faulted, 2))[0].invalidLkasSetting
+
+  # CAM_LKAS ERR_BIT_1 alone (steerFaultPermanent) also marks the camera as faulted; same route's frames
+  CI = car_interface(alpha_long=False)
+  feed(CI, 0, (CAM_LKAS, bytes.fromhex("f8000960020000a7"), 2))
+  feed(CI, 1, (CAM_LKAS, bytes.fromhex("08000960020000b6"), 2))
+  ret = feed(CI, 2, (CAM_LANEINFO, las_off, 2))[0]
+  assert ret.steerFaultPermanent
+  assert not ret.invalidLkasSetting
 
 
 class TestLkasRearm:
